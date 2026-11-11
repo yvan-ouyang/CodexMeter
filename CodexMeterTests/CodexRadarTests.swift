@@ -166,6 +166,25 @@ final class CodexRadarTests: XCTestCase {
         )
     }
 
+    /// 验证 Luna 的缺档保留原列，且官网增加档位时仍保留分数。
+    func testCodexRadarEffortColumnsKeepMissingSlotsAndUnlistedScores() {
+        let model = "gpt-6-luna"
+        let runs = [
+            makeRadarSeries(id: "medium", model: model, effort: "medium", score: 46.4),
+            makeRadarSeries(id: "max", model: model, effort: "MAX", score: 93.5),
+            makeRadarSeries(id: "minimal", model: model, effort: "minimal", score: 0),
+            makeRadarSeries(id: "xhigh", model: model, effort: "xhigh", score: 93.2),
+            makeRadarSeries(id: "high", model: model, effort: "high", score: 84.9)
+        ].compactMap(\.latest)
+
+        let columns = CodexRadarEffortColumns(runs: runs)
+
+        XCTAssertEqual(CodexRadarEffortColumns.labels, ["ultra", "max", "xhigh", "high", "medium", "low"])
+        XCTAssertEqual(columns.scores.map { $0?.score }, [nil, 93.5, 93.2, 84.9, 46.4, nil])
+        XCTAssertEqual(columns.unlistedRuns.map(\.reasoningEffort), ["minimal"])
+        XCTAssertEqual(columns.unlistedRuns.map(\.score), [0])
+    }
+
     /// 验证其他模型默认只选各档位最高分排名前二的具体模型。
     func testCodexRadarOtherModelSelectionUsesTopTwoHighestScores() {
         let series = [

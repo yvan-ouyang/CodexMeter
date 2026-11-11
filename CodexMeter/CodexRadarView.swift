@@ -89,12 +89,12 @@ struct CodexRadarSection: View {
         }
     }
 
-    /// 官网按完整型号展示分数，其他来源沿用家族和曲线选择。单独构建网格以简化弹窗的类型推断。
+    /// 官网使用完整型号和共享档位列，其他来源沿用家族和曲线选择。
     private func gptScoreGrid(for gptSeries: [CodexRadarModelSeries]) -> CodexRadarScoreGrid {
         let grouping: CodexRadarScoreGrid.Grouping
         let toggleGroup: ((String) -> Void)?
         if settings.source == .codexRadar {
-            grouping = .model
+            grouping = .benchmark
             toggleGroup = nil
         } else {
             grouping = .family
@@ -292,15 +292,20 @@ struct CodexRadarSection: View {
     }
 }
 
-/// 最新模型矩阵，用最多两行的紧凑卡片展示模型和 IQ。
+/// 最新模型分数矩阵，官网雷达按档位对齐，其他来源支持紧凑分组和曲线切换。
 private struct CodexRadarScoreGrid: View {
     let runs: [CodexRadarIQRun]
     let grouping: Grouping
     let selectedGroups: Set<String>
     let onToggleGroup: ((String) -> Void)?
 
-    /// 控制 GPT 按家族聚合、其他供应商按具体模型聚合。
+    // 342pt 卡片内为六个档位各留 42pt，容纳 medium 和带星号的小数。
+    private static let benchmarkModelWidth: CGFloat = 78
+    private static let benchmarkColumnSpacing: CGFloat = 2
+
+    /// 官网按具体型号和固定档位列展示，其他分组按家族或具体型号聚合。
     enum Grouping {
+        case benchmark
         case family
         case model
     }
@@ -313,21 +318,88 @@ private struct CodexRadarScoreGrid: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(multiScoreGroups) { group in
-                scoreRow(for: group)
-            }
-            if !singleScoreGroups.isEmpty {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 8)], spacing: 3) {
-                    ForEach(singleScoreGroups) { group in
-                        singleScoreCell(for: group)
+        if grouping == .benchmark, !runs.isEmpty {
+            benchmarkTable
+        } else {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(multiScoreGroups) { group in
+                    scoreRow(for: group)
+                }
+                if !singleScoreGroups.isEmpty {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 8)], spacing: 3) {
+                        ForEach(singleScoreGroups) { group in
+                            singleScoreCell(for: group)
+                        }
                     }
                 }
             }
         }
     }
 
-    /// 按首次出现顺序聚合模型，GPT 使用家族名，其他来源使用完整模型名。
+    /// 档位名集中在表头，分数行可以把各列的空间留给数字。
+    private var benchmarkTable: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: Self.benchmarkColumnSpacing) {
+                Text(AppLocalization.usesEnglish() ? "Model" : "模型")
+                    .frame(width: Self.benchmarkModelWidth, alignment: .leading)
+                ForEach(CodexRadarEffortColumns.labels, id: \.self) { effort in
+                    Text(effort)
+                        .frame(minWidth: 0, maxWidth: .infinity)
+                }
+            }
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(.secondary)
+            Divider()
+            ForEach(modelGroups) { group in
+                benchmarkRow(for: group)
+            }
+        }
+    }
+
+    /// 每行共用表头列宽，缺档保留原位，额外档位沿用原有详情和颜色。
+    private func benchmarkRow(for group: ModelGroup) -> some View {
+        let columns = CodexRadarEffortColumns(runs: group.runs)
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: Self.benchmarkColumnSpacing) {
+                Text(group.label)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(width: Self.benchmarkModelWidth, alignment: .leading)
+                ForEach(CodexRadarEffortColumns.labels.indices, id: \.self) { index in
+                    benchmarkScore(columns.scores[index], effort: CodexRadarEffortColumns.labels[index])
+                }
+            }
+            if !columns.unlistedRuns.isEmpty {
+                scoreRow(for: ModelGroup(id: group.id, label: group.label, runs: columns.unlistedRuns))
+            }
+        }
+    }
+
+    /// 保持分数的完整字号，并为每个可访问性单元格读出对应档位。
+    private func benchmarkScore(_ run: CodexRadarIQRun?, effort: String) -> some View {
+        Group {
+            if let run {
+                let score = CodexRadarNumberFormatter.compactScore(run.score) + (run.status == "provisional" ? "*" : "")
+                let scoreText = Text(score)
+                    .foregroundStyle(color(for: run))
+                    .accessibilityLabel(Text("\(effort) \(score)"))
+                    .fixedSize(horizontal: true, vertical: false)
+                scoreText
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 20)
+                    .contentShape(Rectangle())
+                    .instantHelp(cardHelpText(for: run))
+            } else {
+                Text("—")
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel(Text(AppLocalization.usesEnglish() ? "\(effort), no score" : "\(effort)，暂无分数"))
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 20)
+            }
+        }
+        .font(.system(size: 12, weight: .semibold).monospacedDigit())
+    }
+
+    /// 按首次出现顺序聚合模型，官网和其他模型卡使用完整型号，曲线入口使用家族名。
     private var modelGroups: [ModelGroup] {
         var groupOrder: [String] = []
         var groupLabels: [String: String] = [:]
@@ -339,7 +411,7 @@ private struct CodexRadarScoreGrid: View {
             case .family:
                 groupID = CodexRadarScoreCardText.familyLabel(model: run.model)
                 groupLabel = groupID
-            case .model:
+            case .benchmark, .model:
                 groupID = run.model ?? "model"
                 groupLabel = CodexRadarScoreCardText.modelLabel(model: run.model)
             }

@@ -145,6 +145,26 @@ enum CodexRadarModelSelection {
     }
 }
 
+/// 官网雷达的六个分数列，缺档保留空位，额外档位交给原有分数行展示。
+struct CodexRadarEffortColumns {
+    static let labels = ["ultra", "max", "xhigh", "high", "medium", "low"]
+
+    let scores: [CodexRadarIQRun?]
+    let unlistedRuns: [CodexRadarIQRun]
+
+    /// 按固定列顺序取出同一个模型的分数，保留未放进表格的原始成绩。
+    init(runs: [CodexRadarIQRun]) {
+        var remaining = runs
+        scores = Self.labels.map { label in
+            guard let index = remaining.firstIndex(where: { $0.reasoningEffort?.lowercased() == label }) else {
+                return nil
+            }
+            return remaining.remove(at: index)
+        }
+        unlistedRuns = remaining
+    }
+}
+
 /// 降智雷达模型矩阵文案规则；统一卡片标签和悬停全称的模型格式。
 enum CodexRadarScoreCardText {
     /// 提取模型家族名，供矩阵每行只展示一次。
