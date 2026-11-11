@@ -30,6 +30,8 @@ jobs:
       # 使用命令行覆盖所有目标，先验证兼容性，不改变正式版本的系统要求。
       - name: 运行 macOS 14 兼容编译与单元测试
         run: |
+          # 保留 Xcode 的退出码，避免 tee 将编译或测试失败掩盖为成功。
+          set -o pipefail
           mkdir -p build
           xcodebuild -project CodexMeter.xcodeproj -scheme CodexMeter \
             -destination 'platform=macOS' -derivedDataPath build/DerivedData \
@@ -39,6 +41,7 @@ jobs:
 
       - name: 构建 Intel 应用
         run: |
+          set -o pipefail
           xcodebuild -project CodexMeter.xcodeproj -scheme CodexMeter \
             -configuration Release -destination 'generic/platform=macOS' \
             -derivedDataPath build/DerivedData SYMROOT="$PWD/build/intel" \

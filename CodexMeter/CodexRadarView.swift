@@ -47,12 +47,7 @@ struct CodexRadarSection: View {
                 VStack(alignment: .leading, spacing: 6) {
                     VStack(alignment: .leading, spacing: 4) {
                         header
-                        CodexRadarScoreGrid(
-                            runs: gptSeries.compactMap(\.latest),
-                            grouping: settings.source == .codexRadar ? .model : .family,
-                            selectedGroups: selectedModelFamilies,
-                            onToggleGroup: settings.source == .codexRadar ? nil : toggleChartFamily
-                        )
+                        gptScoreGrid(for: gptSeries)
                         if settings.showsScoreChart,
                            settings.source.supportsScoreHistory,
                            chartSeries.contains(where: { !$0.recentDays.isEmpty }) {
@@ -92,6 +87,25 @@ struct CodexRadarSection: View {
                 radarPlaceholder
             }
         }
+    }
+
+    /// 官网按完整型号展示分数，其他来源沿用家族和曲线选择。单独构建网格以简化弹窗的类型推断。
+    private func gptScoreGrid(for gptSeries: [CodexRadarModelSeries]) -> CodexRadarScoreGrid {
+        let grouping: CodexRadarScoreGrid.Grouping
+        let toggleGroup: ((String) -> Void)?
+        if settings.source == .codexRadar {
+            grouping = .model
+            toggleGroup = nil
+        } else {
+            grouping = .family
+            toggleGroup = { toggleChartFamily($0) }
+        }
+        return CodexRadarScoreGrid(
+            runs: gptSeries.compactMap(\.latest),
+            grouping: grouping,
+            selectedGroups: selectedModelFamilies,
+            onToggleGroup: toggleGroup
+        )
     }
 
     /// 加载中、空数据和错误状态共用主卡片外观。
