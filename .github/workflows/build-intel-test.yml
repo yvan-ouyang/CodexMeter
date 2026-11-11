@@ -1,0 +1,106 @@
+# 本工作流只生成 macOS 14 的 Intel 测试包，不创建 Release、更新 appcast 或推进版本号。
+name: 构建 macOS 14 Intel 测试包
+
+on:
+  push:
+    branches: [codex/macos14-intel-test]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    if: github.repository == 'yvan-ouyang/CodexMeter'
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: 检出测试分支
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: 检查工具链与发布脚本
+        run: |
+          uname -m
+          xcodebuild -version
+          bash script/test_release_version.sh
+          bash script/test_product_identity.sh
+
+      # 使用命令行覆盖所有目标，先验证兼容性，不改变正式版本的系统要求。
+      - name: 运行 macOS 14 兼容编译与单元测试
+        run: |
+          mkdir -p build
+          xcodebuild -project CodexMeter.xcodeproj -scheme CodexMeter \
+            -destination 'platform=macOS' -derivedDataPath build/DerivedData \
+            -resultBundlePath build/Tests.xcresult \
+            MACOSX_DEPLOYMENT_TARGET=14.0 CODE_SIGNING_ALLOWED=NO test \
+            | tee build/test.log
+
+      - name: 构建 Intel 应用
+        run: |
+          xcodebuild -project CodexMeter.xcodeproj -scheme CodexMeter \
+            -configuration Release -destination 'generic/platform=macOS' \
+            -derivedDataPath build/DerivedData SYMROOT="$PWD/build/intel" \
+            MACOSX_DEPLOYMENT_TARGET=14.0 ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM='' \
+            PROVISIONING_PROFILE='' PROVISIONING_PROFILE_SPECIFIER='' build \
+            | tee build/release.log
+
+      - name: 校验签名、架构和最低系统版本
+        run: |
+          codesign --verify --deep --strict --verbose=2 build/intel/Release/CodexMeter.app
+          python3 - <<'PY'
+          # 检查每个可执行文件，避免主程序兼容但内嵌 Widget 或依赖库仍要求更高系统。
+          import pathlib, plistlib, re, subprocess
+          app = pathlib.Path('build/intel/Release/CodexMeter.app')
+          binaries = []
+          for path in app.rglob('*'):
+              if not path.is_file() or path.is_symlink():
+                  continue
+              if path.name == 'Info.plist':
+                  with path.open('rb') as stream:
+                      minimum = plistlib.load(stream).get('LSMinimumSystemVersion')
+                  assert minimum is None or tuple(map(int, minimum.split('.')[:2])) <= (14, 0), (path, minimum)
+              if 'Mach-O' not in subprocess.check_output(['file', '-b', str(path)], text=True):
+                  continue
+              architectures = subprocess.check_output(['lipo', '-archs', str(path)], text=True).split()
+              assert 'x86_64' in architectures, (path, architectures)
+              commands = subprocess.check_output(['otool', '-arch', 'x86_64', '-l', str(path)], text=True)
+              versions = re.findall(r'^\s*minos ([\d.]+)\s*$', commands, re.M)
+              versions += re.findall(r'cmd LC_VERSION_MIN_MACOSX\s+cmdsize \d+\s+version ([\d.]+)', commands)
+              assert versions, ('缺少最低系统版本', path)
+              assert all(tuple(map(int, version.split('.')[:2])) <= (14, 0) for version in versions), (path, versions)
+              binaries.append(str(path))
+          assert len(binaries) >= 3, binaries
+          print('已验证 Intel / macOS 14 可执行文件：', *binaries, sep='\n')
+          PY
+
+      - name: 生成测试 DMG
+        run: |
+          mkdir -p build/dmg-root dist
+          ditto build/intel/Release/CodexMeter.app build/dmg-root/CodexMeter.app
+          ln -s /Applications build/dmg-root/Applications
+          hdiutil create -volname CodexMeter -srcfolder build/dmg-root -format UDZO \
+            "dist/CodexMeter-macos14-intel-${GITHUB_SHA::7}.dmg"
+          hdiutil verify dist/*.dmg
+          shasum -a 256 dist/*.dmg > dist/SHA256SUMS
+
+      - name: 保存测试安装包和校验值
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexMeter-macos14-intel-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 保存构建与测试日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexMeter-build-logs-${{ github.run_id }}
+          path: |
+            build/*.log
+            build/Tests.xcresult
+          if-no-files-found: ignore
+          retention-days: 7
