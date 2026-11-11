@@ -1,7 +1,7 @@
 import CodexMeterShared
 import SwiftUI
 
-// 本文件负责降智雷达可视化，区分三题等权雷达分与其他来源的 IQ 口径。
+// 本文件负责降智雷达可视化，区分官网四题加权雷达分与其他来源的 IQ 口径。
 
 /// 下拉面板里的降智雷达区块；展示最新 IQ 分数、历史折线和拉取状态。
 struct CodexRadarSection: View {
@@ -16,7 +16,7 @@ struct CodexRadarSection: View {
     private var radarPageURL: URL? {
         switch settings.source {
         case .codexRadar:
-            return URL(string: "https://codexradar.com/")
+            return URL(string: "https://codexradar.com/#iq")
         case .radarInsights:
             return nil
         case .aiIQ:
@@ -49,9 +49,9 @@ struct CodexRadarSection: View {
                         header
                         CodexRadarScoreGrid(
                             runs: gptSeries.compactMap(\.latest),
-                            grouping: .family,
+                            grouping: settings.source == .codexRadar ? .model : .family,
                             selectedGroups: selectedModelFamilies,
-                            onToggleGroup: toggleChartFamily
+                            onToggleGroup: settings.source == .codexRadar ? nil : toggleChartFamily
                         )
                         if settings.showsScoreChart,
                            settings.source.supportsScoreHistory,
@@ -249,11 +249,11 @@ struct CodexRadarSection: View {
         }
     }
 
-    /// 标明三题等权、满分150，避免和旧基准或 IQ 混淆。
+    /// 标明官网四题加权满分 150，与其他来源的 IQ 口径区分。
     private func footer(snapshot: CodexRadarSnapshot) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(settings.source == .codexRadar
-                 ? (AppLocalization.usesEnglish() ? "3 tasks · out of 150" : "三题等权 · 满分150")
+                 ? (AppLocalization.usesEnglish() ? "4 weighted tasks · out of 150" : "四题加权 · 满分150")
                  : settings.source == .aiIQ ? "Composite IQ" : AppLocalization.string("常态 90-110"))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)
@@ -265,7 +265,7 @@ struct CodexRadarSection: View {
         .font(.caption2)
     }
 
-    /// 三题标注上游数据核验时间；没有上游时间时只显示抓取时间。
+    /// 优先标注上游分数快照时间；没有上游时间时才显示抓取时间。
     private func syncText(snapshot: CodexRadarSnapshot) -> String {
         if let updatedAt = snapshot.modelIQ?.updatedAt.flatMap(CodexRadarDateFormatter.shortDateTime) {
             if settings.source == .codexRadar {
@@ -350,9 +350,10 @@ private struct CodexRadarScoreGrid: View {
 
     /// 多档位模型使用完整横排，避免档位标签被压缩成省略号。
     private func scoreRow(for group: ModelGroup) -> some View {
-        HStack(spacing: 6) {
+        let labelWidth: CGFloat = grouping == .family ? 42 : (group.id.hasPrefix("gpt-") ? 64 : 104)
+        return HStack(spacing: 6) {
             groupLabel(group)
-                .frame(width: grouping == .family ? 42 : 104, alignment: .leading)
+                .frame(width: labelWidth, alignment: .leading)
             ForEach(group.runs) { run in
                 scoreCell(for: run)
             }

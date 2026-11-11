@@ -164,8 +164,11 @@ enum CodexRadarScoreCardText {
         return components[familyIndex].capitalized
     }
 
-    /// 将非 GPT 的远端模型标识转为适合下拉框和卡片展示的可读名称。
+    /// 将远端模型标识转为矩阵行标题，保留 GPT 代际和厂商缩写。
     static func modelLabel(model: String?) -> String {
+        if model?.hasPrefix("gpt-") == true {
+            return fullLabel(model: model, effort: nil)
+        }
         let components = (model ?? "Model")
             .split(separator: "-")
             .map(String.init)

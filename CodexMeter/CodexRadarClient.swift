@@ -32,7 +32,7 @@ struct DirectCodexRadarClient: CodexRadarFetching {
             switch source {
             case .codexRadar:
                 let data = try await fetchData(from: endpointURL ?? source.endpointURL)
-                return try JSONDecoder().decode(CodexThreeTaskResponse.self, from: data)
+                return try JSONDecoder().decode(CodexFourTaskResponse.self, from: data)
                     .snapshot(fetchedAt: Date())
             case .radarInsights:
                 let data = try await fetchData(from: endpointURL ?? source.endpointURL)
@@ -111,7 +111,7 @@ private extension CodexRadarSource {
     var endpointURL: URL {
         switch self {
         case .codexRadar:
-            return URL(string: "https://codexradar.com/data/codex-three-task-results.json")!
+            return URL(string: "https://codexradar.com/data/codex-four-task-results.json")!
         case .radarInsights:
             return URL(string: "https://codexradar.com/api/radar-insights")!
         case .aiIQ:
@@ -145,63 +145,77 @@ private func makeSnapshot(
     )
 }
 
-/// 官网三题批次快照；仅按已发布的等权规则计算总分，不沿用 RadarBench 的历史。
-private struct CodexThreeTaskResponse: Decodable {
+/// 官网四题批次；校验评分协议后按该批次的权重计算总分。
+private struct CodexFourTaskResponse: Decodable {
     let schema: String
     let protocolVersion: String
     let configurations: Int
-    let taskCount: Int
-    let integratedVerifiedAt: String
+    let scoreMax: Int
+    let taskWeights: TaskWeights
+    let scoreSnapshotAt: String
     let rows: [Row]
 
     enum CodingKeys: String, CodingKey {
         case schema, configurations, rows
         case protocolVersion = "protocol"
-        case taskCount = "task_count"
-        case integratedVerifiedAt = "integrated_verified_at"
+        case scoreMax = "score_max"
+        case taskWeights = "task_weights"
+        case scoreSnapshotAt = "score_snapshot_at"
     }
 
-    /// 校验批次身份、重复档位和数据时间；仅保留完整三题成绩与各 GPT 家族最新版。
+    /// 校验批次身份、档位唯一性和数据时间，只发布各 GPT 家族最新版的完整成绩。
     func snapshot(fetchedAt: Date) throws -> CodexRadarSnapshot {
-        let verifiedAt = (try? Date(integratedVerifiedAt, strategy: .iso8601))
-            ?? (try? Date(integratedVerifiedAt, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
-        guard schema == "codex-three-task-results/1", protocolVersion == "codex-independent-three-v1",
-              taskCount == 3, configurations == rows.count, !rows.isEmpty,
-              Set(rows.map(\.id)).count == rows.count, verifiedAt != nil else {
-            throw DirectCodexRadarClientError.invalidResponse("三题雷达批次不可识别")
+        let parsedDate = (try? Date(scoreSnapshotAt, strategy: .iso8601))
+            ?? (try? Date(scoreSnapshotAt, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
+        guard schema == "codex-four-task-results/1", protocolVersion == "codex-four-weighted-150-v2",
+              scoreMax == 150, taskWeights == .expected,
+              configurations == rows.count, !rows.isEmpty,
+              Set(rows.map(\.id)).count == rows.count, parsedDate != nil else {
+            throw DirectCodexRadarClientError.invalidResponse("四题雷达批次不可识别")
         }
         let series = try rows.filter { $0.model.hasPrefix("gpt-") && $0.model != "gpt-5.5" }
-            .map { try $0.series(date: integratedVerifiedAt) }
+            .map { try $0.series(date: scoreSnapshotAt, weights: taskWeights) }
         return try makeSnapshot(
-            source: .codexRadar, fetchedAt: fetchedAt, updatedAt: integratedVerifiedAt,
+            source: .codexRadar, fetchedAt: fetchedAt, updatedAt: scoreSnapshotAt,
             series: CodexRadarModelSelection.latestGPTSeriesByFamily(from: series).filter { $0.latest != nil }
         )
     }
 
-    /// 单个模型档位的三个原始分项；缺分保留为空，糖果答错则保留为有效零分。
+    /// 四题各自占用的满分；协议或权重变化时拒绝混用不同口径。
+    struct TaskWeights: Decodable, Equatable {
+        static let expected = Self(pompeii: 45, combined: 60, pelican: 22.5, candy: 22.5)
+        let pompeii: Double
+        let combined: Double
+        let pelican: Double
+        let candy: Double
+    }
+
+    /// 单个模型档位的四个原始分项；缺分保留为空，糖果答错则保留为有效零分。
     struct Row: Decodable {
         let model: String
         let effort: String
         let pompeii: Pompeii
-        let pelican: Pelican
+        let combined: ScoredTask
+        let pelican: ScoredTask
         let candy: Candy
         var id: String { "\(model)|\(effort)" }
 
-        /// 三题各占50分；缺分时保留模型身份防止回退旧版本，越界数值使本次刷新失败。
-        func series(date: String) throws -> CodexRadarModelSeries {
+        /// 百分制分项按各自权重折算；缺分保留模型身份，越界成绩使本次刷新失败。
+        func series(date: String, weights: TaskWeights) throws -> CodexRadarModelSeries {
             guard !effort.isEmpty,
-                  pompeii.score100.map({ $0.isFinite && (0...100).contains($0) }) ?? true,
-                  pelican.score.map({ $0.isFinite && (0...100).contains($0) }) ?? true else {
-                throw DirectCodexRadarClientError.invalidResponse("三题雷达分项无效")
+                  [pompeii.score100, combined.score, pelican.score].compactMap({ $0 })
+                    .allSatisfy({ (0...100).contains($0) }) else {
+                throw DirectCodexRadarClientError.invalidResponse("四题雷达分项无效")
             }
             let run: CodexRadarIQRun?
-            if let pompeiiScore = pompeii.score100, let pelicanScore = pelican.score,
-               let correct = candy.correct {
-                let score = (pompeiiScore + pelicanScore) / 2 + (correct ? 50 : 0)
+            if let pompeiiScore = pompeii.score100, let combinedScore = combined.score,
+               let pelicanScore = pelican.score, let correct = candy.correct {
+                let score = (pompeiiScore * weights.pompeii + combinedScore * weights.combined
+                    + pelicanScore * weights.pelican) / 100 + (correct ? weights.candy : 0)
                 run = CodexRadarIQRun(
-                    date: date, score: score, status: "complete", passed: nil, tasks: 3,
+                    date: date, score: score, status: "complete", passed: nil, tasks: 4,
                     invalid: nil, totalTokens: nil, wallTimeHuman: nil,
-                    model: model, reasoningEffort: effort, costUSD: nil, coveredTasks: 3
+                    model: model, reasoningEffort: effort, costUSD: nil, coveredTasks: 4
                 )
             } else {
                 run = nil
@@ -215,8 +229,8 @@ private struct CodexThreeTaskResponse: Decodable {
 
     /// 庞贝原始百分制分数；不会把缺失或未完成成绩补零。
     struct Pompeii: Decodable { let score100: Double? }
-    /// 鹈鹕原评审百分制分数；沿用站方对各模型发布的评审结果。
-    struct Pelican: Decodable { let score: Double? }
+    /// 鹈鹕及综合题使用上游评审的最终百分制分数。
+    struct ScoredTask: Decodable { let score: Double? }
     /// 糖果分项只有对错，nil 表示尚无可计入总分的结论。
     struct Candy: Decodable { let correct: Bool? }
 }
