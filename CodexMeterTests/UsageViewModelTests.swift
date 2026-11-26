@@ -576,7 +576,9 @@ final class UsageViewModelTests: XCTestCase {
         XCTAssertFalse(settingsSource.contains("@MainActor SPUStandardUserDriverDelegate"))
         XCTAssertTrue(usageSource.contains("center.getNotificationSettings"))
         XCTAssertTrue(usageSource.contains("private nonisolated static func enqueueNotifications"))
-        XCTAssertTrue(usageSource.contains("Self.enqueueNotifications(events)"))
+        // 通知桥接仍由非隔离静态入口处理；切换 Antigravity 来源需要一并捕获投递代次。
+        XCTAssertTrue(usageSource.contains("Self.enqueueNotifications(events, gate: antigravityGeneration, generation: antigravityGeneration.current())"))
+        XCTAssertTrue(usageSource.contains("&& gate.current() == generation"))
         XCTAssertTrue(usageSource.contains("@preconcurrency import UserNotifications"))
         XCTAssertFalse(usageSource.contains("await center.notificationSettings()"))
     }
