@@ -7,6 +7,12 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A70000000000000000000005 /* AntigravityStatusline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000001 /* AntigravityStatusline.swift */; };
+		A70000000000000000000006 /* AntigravityStatusline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000001 /* AntigravityStatusline.swift */; };
+		A70000000000000000000007 /* AntigravityStatuslineUsageClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000002 /* AntigravityStatuslineUsageClient.swift */; };
+		A70000000000000000000008 /* AntigravityStatuslineUsageClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000002 /* AntigravityStatuslineUsageClient.swift */; };
+		A70000000000000000000009 /* AntigravityStatuslineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000003 /* AntigravityStatuslineTests.swift */; };
+		A7000000000000000000000A /* antigravity-statusline-v1.marker in Resources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000004 /* antigravity-statusline-v1.marker */; };
         A62000000000000000000006 /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10000000000000000000001C; };
         A62000000000000000000007 /* CodexRadarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 100000000000000000001005; };
         A62000000000000000000002 /* CodexDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A62000000000000000000001; };
@@ -156,6 +162,10 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A70000000000000000000001 /* AntigravityStatusline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityStatusline.swift; sourceTree = "<group>"; };
+		A70000000000000000000002 /* AntigravityStatuslineUsageClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityStatuslineUsageClient.swift; sourceTree = "<group>"; };
+		A70000000000000000000003 /* AntigravityStatuslineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityStatuslineTests.swift; sourceTree = "<group>"; };
+		A70000000000000000000004 /* antigravity-statusline-v1.marker */ = {isa = PBXFileReference; lastKnownFileType = text; path = antigravity-statusline-v1.marker; sourceTree = "<group>"; };
         A62000000000000000000001 /* CodexDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexDashboardView.swift; sourceTree = "<group>"; };
         A62000000000000000000004 /* CodexDashboardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexDashboardTests.swift; sourceTree = "<group>"; };
 		A61000000000000000000007 /* ThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = CodexMeter/ThirdPartyNotices.txt; sourceTree = SOURCE_ROOT; };
@@ -281,6 +291,7 @@
 		100000000000000000000073 /* CodexMeterTests */ = {
 			isa = PBXGroup;
 			children = (
+				A70000000000000000000003 /* AntigravityStatuslineTests.swift */,
 				A50000000000000000000005 /* CodexActivityHookTests.swift */,
 				100000000000000000000012 /* UsageModelsTests.swift */,
 				100000000000000000000013 /* UsageFormatterTests.swift */,
@@ -314,6 +325,9 @@
 				100000000000000000000C03 /* SettingsWindowOpener.swift */,
 				100000000000000000000C06 /* SettingsWindowPresenter.swift */,
 				100000000000000000000F04 /* CodexHookActivityStore.swift */,
+				A70000000000000000000001 /* AntigravityStatusline.swift */,
+				A70000000000000000000002 /* AntigravityStatuslineUsageClient.swift */,
+				A70000000000000000000004 /* antigravity-statusline-v1.marker */,
 				A50000000000000000000004 /* CodexActivityHook.swift */,
 				10000000000000000000001B /* UsageViewModel.swift */,
 				300000000000000000000004 /* LocalCodexUsageReader.swift */,
@@ -503,6 +517,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				100000000000000000000B06 /* Assets.xcassets in Resources */,
+				A7000000000000000000000A /* antigravity-statusline-v1.marker in Resources */,
 				A61000000000000000000006 /* ThirdPartyNotices.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -568,6 +583,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				100000000000000000000002 /* UsageModelsTests.swift in Sources */,
+				A70000000000000000000006 /* AntigravityStatusline.swift in Sources */,
+				A70000000000000000000008 /* AntigravityStatuslineUsageClient.swift in Sources */,
+				A70000000000000000000009 /* AntigravityStatuslineTests.swift in Sources */,
 				A50000000000000000000002 /* CodexActivityHook.swift in Sources */,
 				A50000000000000000000003 /* CodexActivityHookTests.swift in Sources */,
 				A50000000000000000000006 /* CodexHookActivityStore.swift in Sources */,
@@ -622,6 +640,8 @@
 				10000000000000000000000E /* DirectCodexUsageClient.swift in Sources */,
 				100000000000000000001013 /* CodexRadarClient.swift in Sources */,
 				100000000000000000000F03 /* CodexHookActivityStore.swift in Sources */,
+				A70000000000000000000005 /* AntigravityStatusline.swift in Sources */,
+				A70000000000000000000007 /* AntigravityStatuslineUsageClient.swift in Sources */,
 				A50000000000000000000001 /* CodexActivityHook.swift in Sources */,
 				100000000000000000000B01 /* MenuBarDisplaySettings.swift in Sources */,
 				100000000000000000000B03 /* SettingsView.swift in Sources */,

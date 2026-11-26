@@ -18,6 +18,10 @@ enum CodexMeterMain {
             CodexActivityHook.run()
             return
         }
+        if CommandLine.arguments.dropFirst().first == AntigravityStatuslineHook.argument {
+            // 官方 CLI 回调必须在 AppKit、Updater、网络和菜单栏初始化前结束。
+            exit(AntigravityStatuslineHook.run())
+        }
         let application = NSApplication.shared
         let delegate = AppDelegate()
         appDelegate = delegate
@@ -481,6 +485,13 @@ final class StatusBarController: NSObject {
             activityDisplay: activityDisplay,
         )
         statusItem.length = statusWidth
+        let antigravitySettings = GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults)
+        // 菜单栏悬停也明确 CLI 快照来源和采集时间，避免把缓存数字理解为实况请求。
+        if antigravitySettings.usesCLIStatusline, antigravitySettings.showsInMenuBar,
+           layout.items.joined().contains(where: { $0.isGeminiToken }),
+           let cli = viewModel.geminiSnapshot, cli.source == .antigravityCLIStatusline {
+            statusItem.button?.toolTip = "CodexMeter\nAntigravity · " + AntigravityStatuslinePresentation.summary(cli)
+        } else { statusItem.button?.toolTip = "CodexMeter" }
         statusItem.button?.title = ""
         statusItem.button?.attributedTitle = NSAttributedString(string: "")
         statusItem.button?.image = nil
@@ -674,6 +685,7 @@ final class StatusBarController: NSObject {
             activatePopoverWindow()
             Task { await viewModel.refreshLocalCodexUsage() }
             Task { await viewModel.refreshResetCreditsIfNeeded() }
+            Task { await viewModel.refreshCLIStatuslineIfSelected() }
         }
     }
 
@@ -943,10 +955,19 @@ private struct StatusBarLabel: View {
                 line.label.isEmpty ? line.value : "\(line.label) \(line.value)"
             }
             .joined(separator: "，")
-        guard activityDisplay.isVisible else {
-            return quotaText
+        var parts = [quotaText]
+        let antigravitySettings = GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults)
+        if antigravitySettings.usesCLIStatusline, antigravitySettings.showsInMenuBar,
+           layout.items.joined().contains(where: { $0.isGeminiToken }), let cli = viewModel.geminiSnapshot,
+           cli.source == .antigravityCLIStatusline {
+            parts.append("Antigravity · " + AntigravityStatuslinePresentation.summary(cli))
+            let indicators = StatusLineDisplay.layoutGeminiUsageBar(for: .geminiUsageBar, geminiSettings: antigravitySettings, snapshot: cli)
+            if layout.items.joined().contains(.geminiUsageBar), let indicators {
+                parts.append(indicators.windows.map { "\($0.label) \($0.remainingPercent)%" }.joined(separator: "，"))
+            }
         }
-        return "\(quotaText)，\(activityDisplay.accessibilityText)"
+        if activityDisplay.isVisible { parts.append(activityDisplay.accessibilityText) }
+        return parts.filter { !$0.isEmpty }.joined(separator: "，")
     }
 }
 

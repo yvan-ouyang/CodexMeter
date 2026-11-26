@@ -23,6 +23,7 @@ struct GeminiModelsSection: View {
     let onPaceMarkerHoverChange: (String?, Bool) -> Void
 
     var body: some View {
+        let snapshot = self.snapshot.flatMap { geminiSettings.accepts($0.source) ? AntigravityStatuslinePresentation.project($0) : nil }
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Label {
@@ -47,6 +48,13 @@ struct GeminiModelsSection: View {
             }
 
             if let snapshot {
+                if snapshot.source == .antigravityCLIStatusline {
+                    if let plan = snapshot.planName { Text(plan).font(.caption2).foregroundStyle(.secondary) }
+                    Text(AntigravityStatuslinePresentation.summary(snapshot))
+                        .font(.caption2)
+                        .foregroundStyle(AntigravityStatuslinePresentation.isStale(snapshot) ? Color.orange : Color.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 ForEach(visibleGroups(snapshot)) { group in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(group.title)
@@ -87,22 +95,47 @@ struct GeminiModelsSection: View {
     }
 
     /// 将 Antigravity 的真实字段交给共用窗口视图，保留未知周期和重置描述的回退。
-    private func geminiWindow(_ window: GeminiQuotaWindow) -> some View {
-        ProviderQuotaWindowView(
-            id: window.id,
-            title: window.title,
-            window: window.rateLimitWindow,
-            remainingPercent: window.remainingPercent,
-            remainingPercentText: window.remainingPercentText,
-            displaySettings: displaySettings,
-            showsPaceComparison: showsPaceComparison,
-            resetText: resetText(for: window, rateLimitWindow: window.rateLimitWindow),
-            onPaceMarkerHoverChange: onPaceMarkerHoverChange
-        )
+    @ViewBuilder private func geminiWindow(_ window: GeminiQuotaWindow) -> some View {
+        if snapshot?.source == .antigravityCLIStatusline && window.remainingPercent == nil {
+            // 共用进度条会把 nil 解释成 0；CLI 的未知或禁用窗口必须明确保持未知。
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(AppLocalization.string(window.title)).font(.caption2.weight(.semibold))
+                    Spacer()
+                    Text(AppLocalization.string(window.disabled ? "不可用" : "未知"))
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+                if !window.disabled, let reset = resetText(for: window, rateLimitWindow: nil) {
+                    Text("\(AppLocalization.string("重置")) \(reset)")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        } else {
+            ProviderQuotaWindowView(
+                id: window.id,
+                title: snapshot?.source == .antigravityCLIStatusline ? AppLocalization.string(window.title) : window.title,
+                window: window.rateLimitWindow,
+                remainingPercent: window.remainingPercent,
+                remainingPercentText: window.remainingPercentText,
+                displaySettings: displaySettings,
+                showsPaceComparison: showsPaceComparison,
+                resetText: resetText(for: window, rateLimitWindow: window.rateLimitWindow),
+                onPaceMarkerHoverChange: onPaceMarkerHoverChange
+            )
+        }
     }
 
     /// 按当前弹窗时间样式显示窗口重置时间；旧接口只有描述时保留原始文案。
     private func resetText(for window: GeminiQuotaWindow, rateLimitWindow: RateLimitWindow?) -> String? {
+        if snapshot?.source == .antigravityCLIStatusline {
+            switch resetTimeDisplayStyle {
+            case .countdown:
+                if let text = AntigravityStatuslinePresentation.countdown(window, formatter: formatter) { return text }
+            case .absolute:
+                if let reset = window.resetsAt, !window.disabled, reset > Date() { return formatter.resetTime(epochSeconds: Int(reset.timeIntervalSince1970)) }
+            }
+            return AppLocalization.string(window.resetDescription ?? "未知")
+        }
         switch resetTimeDisplayStyle {
         case .countdown:
             if rateLimitWindow?.resetsAt != nil {
@@ -113,9 +146,7 @@ struct GeminiModelsSection: View {
                 return formatter.resetTime(epochSeconds: rateLimitWindow?.resetsAt)
             }
         }
-        guard let resetDescription = window.resetDescription, !resetDescription.isEmpty else {
-            return nil
-        }
+        guard let resetDescription = window.resetDescription, !resetDescription.isEmpty else { return nil }
         return resetDescription
     }
 }

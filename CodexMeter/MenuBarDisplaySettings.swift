@@ -308,6 +308,9 @@ struct MenuBarUsageWindowDisplay: Equatable {
 /// 菜单栏紧凑用量指标的数据；单窗口绘制饼图，双窗口绘制两层环形图。
 struct MenuBarUsageBarDisplay: Equatable {
     let windows: [MenuBarUsageWindowDisplay]
+    // 仅在 CLI 来源下携带简短标记与完整无障碍说明，不改变其他厂商图形尺寸。
+    let statuslineBadge: String?
+    let statuslineDetail: String?
 
     /// 保留单窗口初始化，兼容已有调用方和测试数据。
     init(remainingPercent: Int, tone: UsageRemainingTone) {
@@ -316,11 +319,15 @@ struct MenuBarUsageBarDisplay: Equatable {
             remainingPercent: remainingPercent,
             tone: tone
         )]
+        self.statuslineBadge = nil
+        self.statuslineDetail = nil
     }
 
     /// 限制最多两个窗口，避免未来接口返回额外窗口时破坏菜单栏尺寸。
-    init(windows: [MenuBarUsageWindowDisplay]) {
+    init(windows: [MenuBarUsageWindowDisplay], statuslineBadge: String? = nil, statuslineDetail: String? = nil) {
         self.windows = Array(windows.prefix(2))
+        self.statuslineBadge = statuslineBadge
+        self.statuslineDetail = statuslineDetail
     }
 
     /// 返回首个窗口的剩余量，兼容旧调用方的单值读取。
@@ -376,6 +383,15 @@ struct MenuBarUsageBarView: View {
     var body: some View {
         indicator
             .frame(width: Self.width, height: Self.height)
+            .overlay(alignment: .bottomTrailing) {
+                if let badge = display.statuslineBadge {
+                    Text(badge).font(.system(size: 7, weight: .bold))
+                        .foregroundStyle(badge == "C!" ? Color.orange : Color.primary)
+                        .padding(.horizontal, 1)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 2))
+                }
+            }
+            .help(display.statuslineDetail ?? "")
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(Text(accessibilityText))
     }
@@ -445,7 +461,8 @@ struct MenuBarUsageBarView: View {
     /// 生成辅助功能文本，让两个窗口的含义在图形模式下仍然可读。
     private var accessibilityText: String {
         let values = display.windows.map { "\($0.label) \($0.remainingPercent)%" }
-        return values.isEmpty ? "用量" : "用量 \(values.joined(separator: "，"))"
+        let quota = values.isEmpty ? "用量" : "用量 \(values.joined(separator: "，"))"
+        return [quota, display.statuslineDetail].compactMap { $0 }.joined(separator: "，")
     }
 }
 
@@ -508,7 +525,12 @@ struct StatusLineDisplay: Identifiable, Equatable {
                 displaySettings: settings,
                 geminiSettings: geminiSettings,
                 snapshot: geminiSnapshot
-            )
+            ).map { line in
+                if geminiSettings.usesCLIStatusline, let geminiSnapshot, geminiSettings.accepts(geminiSnapshot.source) {
+                    return markedCLI(line, snapshot: geminiSnapshot)
+                }
+                return line
+            }
         )
     }
 
@@ -647,7 +669,8 @@ struct StatusLineDisplay: Identifiable, Equatable {
         guard geminiSettings.isEnabled, geminiSettings.showsInMenuBar else {
             return (nil, nil)
         }
-        let groups = snapshot?.groups.filter { geminiSettings.model.matches(group: $0) } ?? []
+        let valid = snapshot.flatMap { geminiSettings.accepts($0.source) ? AntigravityStatuslinePresentation.project($0) : nil }
+        let groups = valid?.groups.filter { geminiSettings.model.matches(group: $0) } ?? []
         let candidates = groups.flatMap { group in
             group.windows
                 .filter { !$0.disabled }
@@ -852,6 +875,19 @@ extension StatusLineDisplay {
         geminiSettings: GeminiModelsSettings,
         snapshot: GeminiModelsSnapshot?
     ) -> StatusLineDisplay? {
+        let value = snapshot.flatMap { geminiSettings.accepts($0.source) ? AntigravityStatuslinePresentation.project($0) : nil }
+        guard let line = unmarkedGeminiLine(for: token, settings: settings, geminiSettings: geminiSettings, snapshot: value) else { return nil }
+        guard geminiSettings.usesCLIStatusline, let value else { return line }
+        return markedCLI(line, snapshot: value)
+    }
+
+    /// 保留已有布局解析和窗口选择，CLI 只在边界过滤数据并添加来源标记。
+    private static func unmarkedGeminiLine(
+        for token: MenuBarLayoutToken,
+        settings: MenuBarDisplaySettings,
+        geminiSettings: GeminiModelsSettings,
+        snapshot: GeminiModelsSnapshot?
+    ) -> StatusLineDisplay? {
         let windows = constrainedGeminiWindows(geminiSettings: geminiSettings, snapshot: snapshot)
         switch token {
         case .geminiProvider, .geminiAccount, .geminiPlan, .geminiResetCountdown, .geminiResetTime,
@@ -996,6 +1032,9 @@ extension StatusLineDisplay {
         case .geminiPlan:
             return textLine(id: "gemini-plan", value: snapshot?.planName)
         case .geminiResetCountdown:
+            if geminiSettings.usesCLIStatusline, let sourceWindow {
+                return textLine(id: "gemini-reset-countdown", value: AntigravityStatuslinePresentation.countdown(sourceWindow, formatter: formatter))
+            }
             guard let rateLimitWindow = sourceWindow?.rateLimitWindow,
                   formatter.resetRemainingSeconds(window: rateLimitWindow) != nil else {
                 return nil
@@ -1094,7 +1133,19 @@ extension StatusLineDisplay {
         guard !indicators.isEmpty else {
             return nil
         }
+        if geminiSettings.usesCLIStatusline, let snapshot, geminiSettings.accepts(snapshot.source) {
+            return MenuBarUsageBarDisplay(windows: indicators,
+                statuslineBadge: AntigravityStatuslinePresentation.isStale(snapshot) ? "C!" : "C",
+                statuslineDetail: AntigravityStatuslinePresentation.summary(snapshot))
+        }
         return MenuBarUsageBarDisplay(windows: indicators)
+    }
+
+    /// CLI 数值保持纯比例，来源/过期标记进入既有 label 与宽度计算。
+    private static func markedCLI(_ line: StatusLineDisplay, snapshot: GeminiModelsSnapshot) -> StatusLineDisplay {
+        let badge = AntigravityStatuslinePresentation.isStale(snapshot) ? "CLI*" : "CLI"
+        let label = [line.label, badge].filter { !$0.isEmpty }.joined(separator: " ")
+        return StatusLineDisplay(id: line.id, label: label, value: line.value, tone: line.tone)
     }
 
     /// 将 Antigravity 固定周期窗口转换成布局可直接显示的实际读数。

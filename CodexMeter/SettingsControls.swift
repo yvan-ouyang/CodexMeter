@@ -687,7 +687,8 @@ struct MenuBarLayoutEditor: View {
                     isEnabled: true,
                     model: geminiSettings.model,
                     showsInPopover: geminiSettings.showsInPopover,
-                    showsInMenuBar: true
+                    showsInMenuBar: true,
+                    dataSource: geminiSettings.dataSource
                 )
             return StatusLineDisplay.layoutGeminiLine(
                 for: token,
@@ -714,7 +715,8 @@ struct MenuBarLayoutEditor: View {
                     isEnabled: true,
                     model: geminiSettings.model,
                     showsInPopover: geminiSettings.showsInPopover,
-                    showsInMenuBar: true
+                    showsInMenuBar: true,
+                    dataSource: geminiSettings.dataSource
                 )
             return StatusLineDisplay.layoutGeminiUsageBar(
                 for: token,

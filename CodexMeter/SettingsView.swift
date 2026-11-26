@@ -181,6 +181,7 @@ struct SettingsView: View {
     @AppStorage(CodexRadarPreferenceKeys.showsScoreChart, store: MenuBarDisplaySettings.sharedDefaults) private var codexRadarShowsScoreChart = CodexRadarSettings.defaultShowsScoreChart
     @AppStorage(GeminiModelsPreferenceKeys.isEnabled, store: MenuBarDisplaySettings.sharedDefaults) private var geminiModelsEnabled = GeminiModelsSettings.defaultIsEnabled
     @AppStorage(GeminiModelsPreferenceKeys.model, store: MenuBarDisplaySettings.sharedDefaults) private var geminiModel = GeminiModelsSettings.defaultModel.rawValue
+    @AppStorage(GeminiModelsPreferenceKeys.dataSource, store: MenuBarDisplaySettings.sharedDefaults) private var geminiDataSource = GeminiModelsDataSource.legacy.rawValue
     @AppStorage(GeminiModelsPreferenceKeys.showsInPopover, store: MenuBarDisplaySettings.sharedDefaults) private var geminiShowsInPopover = GeminiModelsSettings.defaultShowsInPopover
     @AppStorage(GeminiModelsPreferenceKeys.showsInMenuBar, store: MenuBarDisplaySettings.sharedDefaults) private var geminiShowsInMenuBar = GeminiModelsSettings.defaultShowsInMenuBar
     @AppStorage(SurfaceAppearancePreferenceKeys.appearanceMode, store: MenuBarDisplaySettings.sharedDefaults) private var surfaceAppearanceMode = SurfaceAppearanceSettings.defaultAppearanceMode.rawValue
@@ -222,6 +223,10 @@ struct SettingsView: View {
     @State private var selectedPane = Pane.general
     @State private var configurationInfo = CodexConfigurationInfo.current()
     @State private var previewSnapshot: UsageSnapshot?
+    @State private var cliPreviewSnapshot: GeminiModelsSnapshot?
+    @State private var cliPreviewError: String?
+    @State private var statuslineInstallation = AntigravityStatuslineInstaller.status()
+    @State private var statuslineInstallationMessage: String?
     @State private var launchAtLoginEnabled = false
     @State private var launchAtLoginError: String?
     @State private var cacheActionMessage: String?
@@ -298,6 +303,7 @@ struct SettingsView: View {
             updateLaunchAtLoginState()
             configurationInfo = CodexConfigurationInfo.current()
             loadPreviewSnapshot()
+            loadStatuslinePreview()
             menuBarLayoutChoice = MenuBarLayoutChoice.matching(settings: currentSettings)
             menuBarLayout = MenuBarLayoutStore.load()
         }
@@ -306,6 +312,11 @@ struct SettingsView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .usageSnapshotDidChange)) { _ in
             loadPreviewSnapshot()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .antigravityCLIStatuslineDidChange)) { notification in
+            let selected = GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults)
+            cliPreviewSnapshot = selected.usesCLIStatusline ? notification.object as? GeminiModelsSnapshot : nil
+            cliPreviewError = selected.usesCLIStatusline ? notification.userInfo?["error"] as? String : nil
         }
     }
 
@@ -675,7 +686,7 @@ struct SettingsView: View {
                     settings: currentSettings,
                     snapshot: previewSnapshot,
                     geminiSettings: GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults),
-                    geminiSnapshot: previewSnapshot?.geminiModels
+                    geminiSnapshot: displayedGeminiPreview
                 )
             }
 
@@ -980,6 +991,12 @@ struct SettingsView: View {
                     )
                 )
                 SettingsPickerRow(
+                    title: "数据来源",
+                    subtitle: "CLI Statusline 仅读取官方 CLI 写入的本地额度，不主动查询 Google。",
+                    selection: geminiBinding($geminiDataSource, key: GeminiModelsPreferenceKeys.dataSource),
+                    options: ([GeminiModelsDataSource.legacy, .cliStatusline] + (geminiDataSource == GeminiModelsDataSource.unavailable.rawValue ? [.unavailable] : [])).map { ($0.rawValue, $0.title) }
+                )
+                SettingsPickerRow(
                     title: "模型配额组",
                     subtitle: "选择菜单和下拉面板展示的配额模型组。",
                     selection: geminiBinding($geminiModel, key: GeminiModelsPreferenceKeys.model),
@@ -1003,14 +1020,18 @@ struct SettingsView: View {
                 )
             }
 
+            if geminiDataSource == GeminiModelsDataSource.cliStatusline.rawValue {
+                statuslineSetupSection
+            }
+
             if geminiModelsEnabled {
                 Section {
                     GeminiModelsSection(
                         geminiSettings: GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults),
                         displaySettings: currentSettings,
                         showsPaceComparison: currentPopoverSettings.showsPaceComparison,
-                        snapshot: previewSnapshot?.geminiModels,
-                        errorMessage: nil,
+                        snapshot: displayedGeminiPreview,
+                        errorMessage: geminiDataSource == GeminiModelsDataSource.cliStatusline.rawValue ? cliPreviewError : nil,
                         formatter: UsageFormatter(language: activeLanguage),
                         resetTimeDisplayStyle: currentPopoverSettings.resetTimeDisplayStyle,
                         onPaceMarkerHoverChange: { _, _ in }
@@ -1019,7 +1040,9 @@ struct SettingsView: View {
             }
 
             Section {
-                Text(AppLocalization.string("配额优先读取正在运行的 Antigravity，本地服务不可用时尝试已保存的 Google OAuth。"))
+                Text(localized(geminiDataSource == GeminiModelsDataSource.cliStatusline.rawValue
+                    ? "CLI 运行或正常刷新额度时才可能更新快照；退出后保留上次观测。此来源不参与额度通知、彩带或自动查询。"
+                    : "配额优先读取正在运行的 Antigravity，本地服务不可用时尝试已保存的 Google OAuth。"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1027,6 +1050,82 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+    }
+
+    /// CLI 配置与数据采集独立，只有用户点击安装/修复/移除才修改官方配置。
+    private var statuslineSetupSection: some View {
+        Section {
+            SettingsPreferenceRow(title: "CLI Statusline 回调", subtitle: "安装后请正常重开已登录的 agy 会话，再使用 /usage；已安装不代表数据已经更新。") {
+                HStack(spacing: 8) {
+                    Text(localized(statuslineInstallationTitle)).foregroundStyle(.secondary)
+                    if statuslineInstallation == .notInstalled || statuslineInstallation == .needsRepair {
+                        Button(localized(statuslineInstallation == .needsRepair ? "修复" : "安装")) { changeStatuslineInstallation(remove: false) }
+                            .controlSize(.small)
+                    }
+                    if statuslineInstallation == .installed || statuslineInstallation == .needsRepair {
+                        Button(localized("移除")) { changeStatuslineInstallation(remove: true) }
+                            .controlSize(.small)
+                    }
+                }
+            }
+            if let statuslineInstallationMessage {
+                Text(localized(statuslineInstallationMessage)).font(.caption).foregroundStyle(.secondary)
+            }
+            if statuslineInstallation == .conflict || statuslineInstallation == .invalid {
+                Text(localized("已有其他 Statusline 或设置文件异常；CodexMeter 不会覆盖。"))
+                    .font(.caption).foregroundStyle(.orange)
+            }
+        }
+        .onAppear { statuslineInstallation = AntigravityStatuslineInstaller.status() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            statuslineInstallation = AntigravityStatuslineInstaller.status()
+        }
+    }
+
+    /// 将配置可验证的状态与实时数据状态区分，避免把安装误报为回调已生效。
+    private var statuslineInstallationTitle: String {
+        switch statuslineInstallation {
+        case .notInstalled: return "未安装"
+        case .installed: return "已安装"
+        case .needsRepair: return "需修复"
+        case .conflict: return "配置冲突"
+        case .invalid: return "配置异常"
+        }
+    }
+
+    /// 使用官方配置安装器更新自有块；保留他人命令，并提示正在运行的 CLI 重新加载。
+    private func changeStatuslineInstallation(remove: Bool) {
+        do {
+            if remove { try AntigravityStatuslineInstaller.remove() }
+            else { try AntigravityStatuslineInstaller.install() }
+            statuslineInstallationMessage = remove
+                ? "已移除自有回调；请正常重开 CLI 会话，历史快照仍保留。"
+                : "已写入 CLI 设置；请正常重开 CLI 会话并查看 /usage。"
+        } catch {
+            statuslineInstallationMessage = error.localizedDescription
+        }
+        statuslineInstallation = AntigravityStatuslineInstaller.status()
+        loadStatuslinePreview()
+        GeminiModelsSettings.notifyDidChange()
+    }
+
+    /// 新来源预览只读独立文件；旧源预览沿用历史快照和关闭后的原有配置行为。
+    private var displayedGeminiPreview: GeminiModelsSnapshot? {
+        let selected = GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults)
+        if selected.usesCLIStatusline { return cliPreviewSnapshot }
+        if selected.dataSource == .legacy && !selected.legacyBaselinePending {
+            return previewSnapshot?.geminiModels.flatMap { $0.source == .antigravityCLIStatusline ? nil : $0 }
+        }
+        return nil
+    }
+
+    /// 设置打开也向唯一 ViewModel 请求本地读取；预览只消费相同发布，避免独立缓存与菜单栏串账号。
+    private func loadStatuslinePreview() {
+        cliPreviewSnapshot = nil
+        cliPreviewError = nil
+        if GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults).usesCLIStatusline {
+            NotificationCenter.default.post(name: .antigravityCLIStatuslineRefreshRequested, object: nil)
+        }
     }
 
     /// Codex 页优先展示费用与用量，沿用共享快照；低频连接和诊断入口放在统计之后。
@@ -1410,6 +1509,9 @@ struct SettingsView: View {
     /// Gemini 展示偏好复用菜单栏通知，使菜单栏和下拉面板在设置写入后立即重建。
     private func geminiBinding<Value>(_ binding: Binding<Value>, key: String) -> Binding<Value> {
         storedBinding(binding, key: key) { _ in
+            if key == GeminiModelsPreferenceKeys.dataSource || key == GeminiModelsPreferenceKeys.isEnabled {
+                loadStatuslinePreview()
+            }
             GeminiModelsSettings.notifyDidChange()
             notifyMenuBarDisplaySettingsDidChange()
         }
@@ -1510,6 +1612,7 @@ struct SettingsView: View {
         let geminiSettings = GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults)
         geminiModelsEnabled = geminiSettings.isEnabled
         geminiModel = geminiSettings.model.rawValue
+        geminiDataSource = geminiSettings.dataSource.rawValue
         geminiShowsInPopover = geminiSettings.showsInPopover
         geminiShowsInMenuBar = geminiSettings.showsInMenuBar
 

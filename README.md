@@ -54,7 +54,10 @@ CodexMeter 以只读方式读取当前 `CODEX_HOME` 下的 Codex 状态库、会
 - 可选启用 Antigravity，选择全部模型或指定模型配额组。
 - 支持在下拉面板和菜单栏分别显示 Antigravity 配额。
 - 5 小时窗口优先用于菜单栏摘要和紧张窗口判断。
-- 配额优先读取正在运行的本地 Antigravity 服务；本地服务不可用时才尝试已保存的 Google OAuth 配置。
+- 数据来源可选：原有本地服务 / OAuth（保留历史默认行为），或 **CLI Statusline**（读取官方 CLI 提供的本地快照）。
+- 使用 CLI 来源：安装并登录[官方 Antigravity CLI](https://antigravity.google/download)，在 CodexMeter「设置 → Antigravity」启用 Antigravity、选择「CLI Statusline」，点击回调安装；正常退出并重新打开 `agy`，使用 `/usage`。CLI 自身更新状态时把额度发送给原生回调；CodexMeter 不启动 CLI、不轮询 Google、不发送模型请求。配置状态“已安装”不等于已有有效额度。
+- 使用现有模型组和菜单栏布局选择。下拉卡片显示本地最近采集时间；菜单栏 `CLI*` / 环形条 `C!` 表示快照可能已过期。CLI 空闲、关闭或桌面端独立使用时不保证实时更新；正常关闭保留上次有效数据，已过的重置时间不冒充实际恢复。CLI 来源仅展示，不触发额度提醒或彩带。
+- 安装器保留其他 CLI 设置、内置状态行及非本应用 Statusline；已有其他命令时不覆盖。关闭显示不会卸载回调。可在同一设置页显式移除回调并正常重开 CLI；卸载、移动或降级前建议先移除，新版能力标记缺失时旧 app 不会被回调启动。
 
 ### OpenCode Go
 

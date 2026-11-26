@@ -442,6 +442,8 @@ public struct GeminiQuotaGroup: Codable, Equatable, Identifiable, Sendable {
 public enum GeminiModelsUsageSource: String, Codable, Equatable, Sendable {
     case antigravityLocal = "antigravity-local"
     case googleOAuth = "google-oauth"
+    // CLI 只用于独立本地快照和内存展示，不写入旧 Widget 共享快照。
+    case antigravityCLIStatusline = "antigravity-cli-statusline"
 }
 
 /// 保存一次 Gemini Models 配额读取结果；旧版本快照没有该字段时会自然解码为 nil。

@@ -1106,12 +1106,16 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
 
     /// 优先探测正在运行的 Antigravity；本地服务不可用时再读取保存的 OAuth 文件。
     func fetchGeminiModels() async throws -> GeminiModelsSnapshot {
+        try Task.checkCancellation()
         do {
             return try await fetchLocalSnapshot()
         } catch let localError {
+            // 切到 CLI 或关闭来源后，取消不能当作旧服务故障触发下一来源。
+            try Self.rethrowCancellation(localError)
             do {
                 return try await fetchOAuthSnapshot()
             } catch let oauthError as GeminiModelsUsageClientError {
+                try Task.checkCancellation()
                 let action: String
                 if case .credentialsUnavailable = oauthError {
                     action = "请在终端运行 gemini 完成认证。"
@@ -1125,6 +1129,7 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
                         + action
                 )
             } catch {
+                try Self.rethrowCancellation(error)
                 throw GeminiModelsUsageClientError.notAvailable(
                     "未读取到 Antigravity 配额（"
                         + localError.localizedDescription
@@ -1136,12 +1141,14 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
 
     /// 遍历 Antigravity 语言服务进程和监听端口，避免依赖固定端口或 UI 抓取。
     private func fetchLocalSnapshot() async throws -> GeminiModelsSnapshot {
+        try Task.checkCancellation()
         let processes: [LocalAntigravityProcess]
         do {
             processes = try Self.parseProcessList(processList())
         } catch let error as GeminiModelsUsageClientError {
             throw error
         } catch {
+            try Self.rethrowCancellation(error)
             throw GeminiModelsUsageClientError.notAvailable("无法检测 Antigravity 语言服务。")
         }
         guard !processes.isEmpty else {
@@ -1150,10 +1157,12 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
 
         var lastError: Error?
         for process in processes {
+            try Task.checkCancellation()
             let ports: [Int]
             do {
                 ports = try listeningPorts(process.pid)
             } catch {
+                try Self.rethrowCancellation(error)
                 lastError = error
                 continue
             }
@@ -1161,6 +1170,7 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
                 do {
                     return try await fetchLocalSnapshot(endpoint: endpoint)
                 } catch {
+                    try Self.rethrowCancellation(error)
                     lastError = error
                 }
             }
@@ -1170,13 +1180,13 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
 
     /// 按 CodexBar 的优先级尝试额度摘要、用户状态和模型配置三个本地接口。
     private func fetchLocalSnapshot(endpoint: LocalAntigravityEndpoint) async throws -> GeminiModelsSnapshot {
-        _ = try? await sendLocalRequest(
+        _ = try await optionalLocalRequest(
             path: Self.getUnleashPath,
             body: Self.unleashBody(),
             endpoint: endpoint
         )
 
-        if let summaryData = try? await sendLocalRequest(
+        if let summaryData = try await optionalLocalRequest(
             path: Self.quotaSummaryPath,
             body: ["forceRefresh": true],
             endpoint: endpoint
@@ -1186,7 +1196,7 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
             source: .antigravityLocal
         ), summary.hasUsableQuota {
             let identity: (email: String?, plan: String?)?
-            if let statusData = try? await sendLocalRequest(
+            if let statusData = try await optionalLocalRequest(
                 path: Self.getUserStatusPath,
                 body: Self.defaultRequestBody(),
                 endpoint: endpoint
@@ -1198,7 +1208,7 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
             return summary.withIdentity(identity)
         }
 
-        if let statusData = try? await sendLocalRequest(
+        if let statusData = try await optionalLocalRequest(
             path: Self.getUserStatusPath,
                 body: Self.defaultRequestBody(),
             endpoint: endpoint
@@ -1224,6 +1234,7 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
 
     /// 从 CodexBar 兼容路径加载 OAuth；只读取现有 token，不把认证材料写入用量快照。
     private func fetchOAuthSnapshot() async throws -> GeminiModelsSnapshot {
+        try Task.checkCancellation()
         let credentials = try loadOAuthCredentials()
         guard let accessToken = credentials.accessToken, !accessToken.isEmpty else {
             throw GeminiModelsUsageClientError.credentialsUnavailable
@@ -1271,6 +1282,18 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
         )
     }
 
+    /// 可选旧响应允许普通错误降级，但取消错误必须停止整个旧来源链路。
+    private func optionalLocalRequest(path: String, body: [String: Any], endpoint: LocalAntigravityEndpoint) async throws -> Data? {
+        do { return try await sendLocalRequest(path: path, body: body, endpoint: endpoint) }
+        catch { try Self.rethrowCancellation(error); return nil }
+    }
+
+    /// 统一识别任务取消及传输层取消，不改变普通网络失败的历史处理方式。
+    private static func rethrowCancellation(_ error: Error) throws {
+        if error is CancellationError || (error as? URLError)?.code == .cancelled { throw CancellationError() }
+        try Task.checkCancellation()
+    }
+
     /// 发送本地语言服务请求，并只接受成功的 HTTP 响应。
     private func sendLocalRequest(
         path: String,
@@ -1306,8 +1329,10 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
 
     /// 统一处理传输、HTTP 状态和响应体，避免本地和远端分支产生不同错误语义。
     private func send(_ request: URLRequest) async throws -> Data {
+        try Task.checkCancellation()
         do {
             let (data, response) = try await transport(request)
+            try Task.checkCancellation()
             guard (200..<300).contains(response.statusCode) else {
                 let message = String(data: data, encoding: .utf8)?
                     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1316,14 +1341,17 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
             }
             return data
         } catch let error as GeminiModelsUsageClientError {
+            try Task.checkCancellation()
             throw error
         } catch {
+            try Self.rethrowCancellation(error)
             throw GeminiModelsUsageClientError.network(error.localizedDescription)
         }
     }
 
     /// 读取兼容 CodexBar 的环境变量和本地 OAuth 文件，按优先级返回第一个有效文件。
     private func loadOAuthCredentials() throws -> AntigravityOAuthCredentials {
+        try Task.checkCancellation()
         if let value = environment["ANTIGRAVITY_OAUTH_CREDENTIALS_JSON"],
            let data = value.data(using: .utf8),
            let credentials = try? JSONDecoder().decode(AntigravityOAuthCredentials.self, from: data) {
@@ -1340,6 +1368,7 @@ struct AntigravityGeminiModelsClient: GeminiModelsUsageFetching, Sendable {
                 .appendingPathComponent("oauth_creds.json")
         ]
         for url in urls where FileManager.default.fileExists(atPath: url.path) {
+            try Task.checkCancellation()
             let data = try Data(contentsOf: url)
             return try JSONDecoder().decode(AntigravityOAuthCredentials.self, from: data)
         }

@@ -700,6 +700,27 @@ public enum GeminiModelsPreferenceKeys {
     public static let model = "geminiModels.model"
     public static let showsInPopover = "geminiModels.showsInPopover"
     public static let showsInMenuBar = "geminiModels.showsInMenuBar"
+    public static let dataSource = "geminiModels.dataSource"
+    // 退出 CLI 来源后，下一次真实旧源观测必须先建立基线，不能与隔期缓存比较。
+    public static let legacyBaselinePending = "geminiModels.legacyBaselinePending"
+}
+
+/// 区分原有探测链路与官方 CLI 本地快照；异常来源不回落到网络查询。
+public enum GeminiModelsDataSource: String, CaseIterable, Identifiable, Sendable {
+    case legacy = "legacy"
+    case cliStatusline = "cli-statusline"
+    case unavailable = "unavailable"
+
+    public var id: String { rawValue }
+
+    /// 返回设置页中可理解的来源名称，未知值要求用户显式重新选择。
+    public var title: String {
+        switch self {
+        case .legacy: return "原有本地服务 / OAuth"
+        case .cliStatusline: return "CLI Statusline"
+        case .unavailable: return "未知来源（请选择）"
+        }
+    }
 }
 
 /// 应用语言沿用系统语言代码；空值表示不覆盖 macOS 的语言选择。
@@ -793,23 +814,33 @@ public struct GeminiModelsSettings: Equatable, Sendable {
     public let model: GeminiModelOption
     public let showsInPopover: Bool
     public let showsInMenuBar: Bool
+    public let dataSource: GeminiModelsDataSource
+    public let legacyBaselinePending: Bool
 
+    /// 增加独立来源偏好，已有调用点默认保持旧来源及展示行为。
     public init(
         isEnabled: Bool = Self.defaultIsEnabled,
         model: GeminiModelOption = Self.defaultModel,
         showsInPopover: Bool = Self.defaultShowsInPopover,
-        showsInMenuBar: Bool = Self.defaultShowsInMenuBar
+        showsInMenuBar: Bool = Self.defaultShowsInMenuBar,
+        dataSource: GeminiModelsDataSource = .legacy,
+        legacyBaselinePending: Bool = false
     ) {
         self.isEnabled = isEnabled
         self.model = model
         self.showsInPopover = showsInPopover
         self.showsInMenuBar = showsInMenuBar
+        self.dataSource = dataSource
+        self.legacyBaselinePending = legacyBaselinePending
     }
 
-    /// 只读取当前模型组键；旧版取值转换由用户点击迁移后单独处理。
+    /// 缺少来源键代表旧版本；存在但无法识别的值不得自动开启旧来源探测。
     public init(defaults: UserDefaults) {
         let storedModel = defaults.string(forKey: GeminiModelsPreferenceKeys.model) ?? ""
         let model = GeminiModelOption(rawValue: storedModel) ?? Self.defaultModel
+        let sourceValue = defaults.object(forKey: GeminiModelsPreferenceKeys.dataSource)
+        let dataSource: GeminiModelsDataSource = sourceValue == nil ? .legacy
+            : ((sourceValue as? String).flatMap(GeminiModelsDataSource.init(rawValue:)) ?? .unavailable)
         self.init(
             isEnabled: defaults.object(forKey: GeminiModelsPreferenceKeys.isEnabled) as? Bool
                 ?? Self.defaultIsEnabled,
@@ -817,8 +848,24 @@ public struct GeminiModelsSettings: Equatable, Sendable {
             showsInPopover: defaults.object(forKey: GeminiModelsPreferenceKeys.showsInPopover) as? Bool
                 ?? Self.defaultShowsInPopover,
             showsInMenuBar: defaults.object(forKey: GeminiModelsPreferenceKeys.showsInMenuBar) as? Bool
-                ?? Self.defaultShowsInMenuBar
+                ?? Self.defaultShowsInMenuBar,
+            dataSource: dataSource,
+            legacyBaselinePending: defaults.bool(forKey: GeminiModelsPreferenceKeys.legacyBaselinePending)
         )
+    }
+
+    /// 仅明确启用旧来源时允许既有探测及通知链路。
+    public var usesLegacySource: Bool { isEnabled && dataSource == .legacy }
+
+    /// CLI 来源是独立的只读本地模式。
+    public var usesCLIStatusline: Bool { isEnabled && dataSource == .cliStatusline }
+
+    /// 选中来源和总开关共同约束可发布数据，防止切换或缓存恢复串源。
+    public func accepts(_ source: GeminiModelsUsageSource) -> Bool {
+        switch source {
+        case .antigravityLocal, .googleOAuth: return usesLegacySource
+        case .antigravityCLIStatusline: return usesCLIStatusline
+        }
     }
 
     /// 通知主 app 立即刷新 Gemini 配额；配置变更仍由菜单栏观察者负责重建界面。
@@ -862,6 +909,36 @@ public enum AppLocalization {
         "Google AI Pro": "Google AI Pro",
         "Gemini Models": "Gemini Models",
         "启用 Antigravity": "Enable Antigravity",
+        "原有本地服务 / OAuth": "Existing Local Service / OAuth",
+        "未知来源（请选择）": "Unknown Source (Select One)",
+        "CLI Statusline": "CLI Statusline",
+        "CLI Statusline 仅读取官方 CLI 写入的本地额度，不主动查询 Google。": "CLI Statusline reads only local quota data supplied by the official CLI; it does not query Google.",
+        "CLI Statusline 回调": "CLI Statusline Callback",
+        "安装后请正常重开已登录的 agy 会话，再使用 /usage；已安装不代表数据已经更新。": "Restart your signed-in agy session and use /usage after installation. Installed does not mean data is available yet.",
+        "CLI 运行或正常刷新额度时才可能更新快照；退出后保留上次观测。此来源不参与额度通知、彩带或自动查询。": "The snapshot may update while the CLI runs or refreshes its quotas. The last observation remains after quitting. This source does not generate notifications, confetti, or automatic queries.",
+        "未安装": "Not Installed",
+        "修复": "Repair",
+        "需修复": "Repair Needed",
+        "移除": "Remove",
+        "配置冲突": "Configuration Conflict",
+        "配置异常": "Invalid Configuration",
+        "已有其他 Statusline 或设置文件异常；CodexMeter 不会覆盖。": "Another Statusline or invalid configuration exists; CodexMeter will not overwrite it.",
+        "已移除自有回调；请正常重开 CLI 会话，历史快照仍保留。": "Callback removed. Restart the CLI session; the last snapshot is retained.",
+        "已写入 CLI 设置；请正常重开 CLI 会话并查看 /usage。": "CLI settings saved. Restart the CLI session and open /usage.",
+        "等待官方 CLI Statusline 额度快照。请保持 CLI 运行并正常刷新额度。": "Waiting for the official CLI Statusline snapshot. Keep the CLI running and refresh quotas normally.",
+        "请选择有效的 Antigravity 数据来源。": "Select a valid Antigravity data source.",
+        "最近采集": "Last observed",
+        "快照可能已过期": "Snapshot may be stale",
+        "仅随 CLI 状态更新": "Updates with CLI state only",
+        "等待 CLI 更新": "Waiting for CLI update",
+        "不可用": "Unavailable",
+        "CLI 额度快照格式无效，请等待下一次有效回调。": "Invalid CLI quota snapshot. Wait for the next valid callback.",
+        "CLI 本地文件不可读写或文件类型不安全。": "The local CLI file is inaccessible or has an unsafe type.",
+        "CLI 额度快照正在更新，请稍后重试。": "The CLI quota snapshot is being updated. Try again later.",
+        "Antigravity CLI 设置格式无效，未修改配置。": "Invalid Antigravity CLI settings; nothing was changed.",
+        "已有其他 Statusline 配置，CodexMeter 不会覆盖它。": "An existing Statusline is configured; CodexMeter will not overwrite it.",
+        "CLI 配置在编辑期间已变化，请重试。": "The CLI configuration changed during editing. Try again.",
+        "当前 CodexMeter 安装包缺少 Statusline 回调入口。": "The current CodexMeter bundle does not contain the Statusline callback.",
         "以独立配置显示 Antigravity 模型配额。": "Show Antigravity model quota as an independent configuration.",
         "模型配额组": "Model Quota Group",
         "选择菜单和下拉面板展示的配额模型组。": "Choose the quota model group shown in the menu bar and popover.",
