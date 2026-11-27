@@ -578,6 +578,9 @@ final class UsageViewModel: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var geminiSnapshot: GeminiModelsSnapshot?
     @Published private(set) var geminiErrorMessage: String?
+    // 本地检查完成时刻与 CLI 回调的真实观测时间独立，不能因反复读取而伪造额度更新。
+    @Published private(set) var cliLastCheckedAt: Date?
+    @Published private(set) var isRefreshingCLIStatusline = false
 
     private let client: any UsageRateLimitFetching
     private let geminiClient: any GeminiModelsUsageFetching
@@ -599,6 +602,8 @@ final class UsageViewModel: ObservableObject {
     private var awaitingLegacyBaseline = false
     private var cliRawSnapshot: GeminiModelsSnapshot?
     private var cliReadTask: Task<Void, Never>?
+    private var cliReadEnabled = false
+    private var cliReadInterval: UInt64?
     private var cliDisplayTask: Task<Void, Never>?
     private var hasStartedRefreshLoop = false
     private var isRefreshingLocalUsage = false
@@ -825,7 +830,8 @@ final class UsageViewModel: ObservableObject {
         guard resetCreditsVisibilityProvider(), needsResetCreditsRefresh else {
             return
         }
-        await refresh(forceRefreshResetCredits: true)
+        // 打开下拉已有独立的 CLI 检查任务；补读 Codex 重置卡不重复读取本地额度。
+        await refresh(forceRefreshResetCredits: true, readsCLI: false)
     }
 
     /// CLI 模式先独立读取本地快照；Codex 网络成功或失败均不得替换它或把它写入共享缓存。
@@ -898,6 +904,8 @@ final class UsageViewModel: ObservableObject {
         geminiRefreshTask?.cancel()
         geminiRefreshTask = nil
         cliRawSnapshot = nil
+        cliLastCheckedAt = nil
+        isRefreshingCLIStatusline = false
         cliDisplayTask?.cancel()
         cliDisplayTask = nil
         geminiSnapshot = nil
@@ -910,10 +918,19 @@ final class UsageViewModel: ObservableObject {
     private func publishCLI(_ raw: GeminiModelsSnapshot?, error: String? = nil) {
         cliRawSnapshot = raw
         geminiErrorMessage = error
+        cliLastCheckedAt = Date()
+        isRefreshingCLIStatusline = false
         geminiSnapshot = raw.map { AntigravityStatuslinePresentation.project($0) }
-        NotificationCenter.default.post(name: .antigravityCLIStatuslineDidChange, object: geminiSnapshot,
-            userInfo: error.map { ["error": $0] })
+        publishCLIViewState()
         scheduleCLIProjection()
+    }
+
+    /// 同一份展示状态供设置预览消费；纯时钟投影仍携带原检查时间，不产生新观测。
+    private func publishCLIViewState() {
+        var info: [AnyHashable: Any] = [:]
+        if let error = geminiErrorMessage { info["error"] = error }
+        if let checkedAt = cliLastCheckedAt { info["checkedAt"] = checkedAt }
+        NotificationCenter.default.post(name: .antigravityCLIStatuslineDidChange, object: geminiSnapshot, userInfo: info)
     }
 
     /// 仅在显示的 CLI 快照有未来时间边界时安排一次重绘；不读取文件，不向 Google 请求。
@@ -939,14 +956,14 @@ final class UsageViewModel: ObservableObject {
     private func refreshCLIProjection() {
         guard geminiSettingsProvider().usesCLIStatusline, let raw = cliRawSnapshot else { return }
         geminiSnapshot = AntigravityStatuslinePresentation.project(raw)
-        NotificationCenter.default.post(name: .antigravityCLIStatuslineDidChange, object: geminiSnapshot)
+        publishCLIViewState()
         scheduleCLIProjection()
     }
 
     /// 打开面板、手动刷新或独立本地定时器调用；旧路径不会通过此入口触发。
     func refreshCLIStatuslineIfSelected() async {
         guard geminiSettingsProvider().usesCLIStatusline else { return }
-        await refreshGeminiModels()
+        _ = await refreshGeminiSnapshotIfEnabled()
     }
 
     /// 按显式来源刷新；完成后同时核对当前选择和代次，禁止已取消的旧任务发布。
@@ -959,16 +976,30 @@ final class UsageViewModel: ObservableObject {
             geminiErrorMessage = AppLocalization.string("请选择有效的 Antigravity 数据来源。")
             return nil
         }
+        if requested.usesCLIStatusline, let existingTask = geminiRefreshTask {
+            // 多个界面/定时入口共享同一轮本地读取，不反复取消或启动新的旧来源请求。
+            let existingGeneration = geminiRefreshGeneration
+            _ = try? await existingTask.value
+            let current = geminiSettingsProvider()
+            guard existingGeneration == geminiRefreshGeneration, current.usesCLIStatusline else { return nil }
+            return matchingGeminiSnapshot(for: current)
+        }
         geminiRefreshTask?.cancel()
         geminiRefreshGeneration += 1
         let generation = geminiRefreshGeneration
+        if requested.usesCLIStatusline { isRefreshingCLIStatusline = true }
         let selectedClient = requested.usesCLIStatusline ? statuslineClient : geminiClient
         let task = Task {
             try Task.checkCancellation()
             return try await selectedClient.fetchGeminiModels()
         }
         geminiRefreshTask = task
-        defer { if generation == geminiRefreshGeneration { geminiRefreshTask = nil } }
+        defer {
+            if generation == geminiRefreshGeneration {
+                geminiRefreshTask = nil
+                if requested.usesCLIStatusline { isRefreshingCLIStatusline = false }
+            }
+        }
         do {
             let fetched = try await task.value
             let current = geminiSettingsProvider()
@@ -1005,6 +1036,11 @@ final class UsageViewModel: ObservableObject {
 
     /// 既有旧源才合并共享缓存；CLI 快照可以没有 Codex 账号或网络数据而独立显示。
     private func refreshGeminiModels() async {
+        // CLI 入口只读本地状态，即使读取期间切回旧来源也不会代替旧源保存共享缓存。
+        if geminiSettingsProvider().usesCLIStatusline {
+            await refreshCLIStatuslineIfSelected()
+            return
+        }
         let refreshed = await refreshGeminiSnapshotIfEnabled()
         let current = geminiSettingsProvider()
         guard current.usesLegacySource, let refreshed = refreshed, current.accepts(refreshed.source),
@@ -1030,6 +1066,8 @@ final class UsageViewModel: ObservableObject {
         geminiRefreshTask?.cancel()
         geminiRefreshTask = nil
         cliRawSnapshot = nil
+        cliLastCheckedAt = nil
+        isRefreshingCLIStatusline = false
         cliDisplayTask?.cancel()
         cliDisplayTask = nil
         geminiSnapshot = nil
@@ -1061,7 +1099,11 @@ final class UsageViewModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             // 同步失效旧来源，随后再异步读取，防止菜单栏重建时短暂展示错源数据。
-            MainActor.assumeIsolated { self?.synchronizeGeminiSource() }
+            MainActor.assumeIsolated {
+                self?.synchronizeGeminiSource()
+                // 本通知下方已有单次刷新入口；周期任务不再安排第二个初读。
+                self?.reconcileCLIReadLoop(requestInitial: false)
+            }
             Task { @MainActor in await self?.refreshGeminiModels() }
         }
     }
@@ -1109,23 +1151,39 @@ final class UsageViewModel: ObservableObject {
         }
     }
 
-    /// 按当前刷新频率重建后台任务；手动模式不做启动同步，也不保留定时循环。
-    private func applyRefreshCadence() {
-        refreshTask?.cancel()
-        refreshTask = nil
-        cliReadTask?.cancel()
-        cliReadTask = nil
-        let cadence = refreshCadenceProvider().intervalNanoseconds
-        // CLI 本地循环与 Codex 请求完全独立；手动档只在启动时读一次。
+    /// 独立维护 CLI 五分钟读取任务；自动档之间切换不会重启本地计时，手动档不保留定时读取。
+    private func reconcileCLIReadLoop(requestInitial: Bool = true) {
+        let enabled = geminiSettingsProvider().usesCLIStatusline
+        let interval = enabled ? AntigravityLocalRefresh.interval(for: refreshCadenceProvider()) : nil
+        guard cliReadEnabled != enabled || cliReadInterval != interval else { return }
+        let wasEnabled = cliReadEnabled
+        cliReadEnabled = enabled; cliReadInterval = interval
+        cliReadTask?.cancel(); cliReadTask = nil
+        guard enabled else { return }
+        if requestInitial && !wasEnabled {
+            let requestedGeneration = geminiRefreshGeneration
+            Task { [weak self] in
+                guard let self, self.geminiRefreshGeneration == requestedGeneration else { return }
+                await self.refreshCLIStatuslineIfSelected()
+            }
+        }
+        guard let interval else { return }
         cliReadTask = Task { [weak self] in
-            await self?.refreshCLIStatuslineIfSelected()
-            guard let cadence else { return }
+            guard !Task.isCancelled else { return }
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: cadence)
+                do { try await Task.sleep(nanoseconds: interval) } catch { return }
                 guard !Task.isCancelled, self != nil else { return }
                 await self?.refreshCLIStatuslineIfSelected()
             }
         }
+    }
+
+    /// Codex 继续沿用其原刷新周期；CLI 本地检查独立调度，不受网络请求阻塞。
+    private func applyRefreshCadence() {
+        refreshTask?.cancel()
+        refreshTask = nil
+        reconcileCLIReadLoop()
+        let cadence = refreshCadenceProvider().intervalNanoseconds
         guard let intervalNanoseconds = cadence else { return }
         refreshTask = Task { [weak self] in
             guard let self else { return }

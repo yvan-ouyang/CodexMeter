@@ -34,6 +34,7 @@ final class SettingsWindowPresenter {
     private let makeContentViewController: @MainActor () -> NSViewController
     private let prepareApplicationForWindow: @MainActor () -> Void
     private let activateApplication: @MainActor () -> Void
+    private let requestLocalChecks: @MainActor () -> Void
 
     /// 注入窗口内容与激活行为；默认保留标准窗口宿主，由内容分层选择系统材质。
     init(
@@ -46,16 +47,23 @@ final class SettingsWindowPresenter {
         },
         activateApplication: @escaping @MainActor () -> Void = {
             NSApp.activate(ignoringOtherApps: true)
+        },
+        requestLocalChecks: @escaping @MainActor () -> Void = {
+            // 真实打开边界统一请求已有本地事实，设置页的重绘不再自行读文件。
+            NotificationCenter.default.post(name: .antigravityCLIStatuslineRefreshRequested, object: nil)
+            Task { await AntigravityPowertoolsStore.shared.refresh() }
         }
     ) {
         self.makeContentViewController = makeContentViewController
         self.prepareApplicationForWindow = prepareApplicationForWindow
         self.activateApplication = activateApplication
+        self.requestLocalChecks = requestLocalChecks
     }
 
     @discardableResult
     func show() -> NSWindow {
         let settingsWindow = window ?? makeWindow()
+        let wasVisible = settingsWindow.isVisible && !settingsWindow.isMiniaturized
         window = settingsWindow
         applyCurrentAppearance()
 
@@ -63,6 +71,7 @@ final class SettingsWindowPresenter {
         activateApplication()
         settingsWindow.makeKeyAndOrderFront(nil)
         settingsWindow.orderFrontRegardless()
+        if !wasVisible { requestLocalChecks() }
 
         return settingsWindow
     }

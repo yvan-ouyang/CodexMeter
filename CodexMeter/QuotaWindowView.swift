@@ -21,13 +21,41 @@ struct GeminiModelsSection: View {
     let formatter: UsageFormatter
     let resetTimeDisplayStyle: ResetTimeDisplayStyle
     let onPaceMarkerHoverChange: (String?, Bool) -> Void
+    let cliLastCheckedAt: Date?
+    let showsAccountSummary: Bool
 
+    /// 刷新检查时刻与真实额度观测分开；弹窗上层已展示额度账号时可隐藏卡片内重复身份。
+    init(
+        geminiSettings: GeminiModelsSettings,
+        displaySettings: MenuBarDisplaySettings,
+        showsPaceComparison: Bool,
+        snapshot: GeminiModelsSnapshot?,
+        errorMessage: String?,
+        formatter: UsageFormatter,
+        resetTimeDisplayStyle: ResetTimeDisplayStyle,
+        onPaceMarkerHoverChange: @escaping (String?, Bool) -> Void,
+        cliLastCheckedAt: Date? = nil,
+        showsAccountSummary: Bool = true
+    ) {
+        self.geminiSettings = geminiSettings
+        self.displaySettings = displaySettings
+        self.showsPaceComparison = showsPaceComparison
+        self.snapshot = snapshot
+        self.errorMessage = errorMessage
+        self.formatter = formatter
+        self.resetTimeDisplayStyle = resetTimeDisplayStyle
+        self.onPaceMarkerHoverChange = onPaceMarkerHoverChange
+        self.cliLastCheckedAt = cliLastCheckedAt
+        self.showsAccountSummary = showsAccountSummary
+    }
+
+    /// 只显示当前设置接受的额度来源；即使本地读成功也沿用回调实际观测，不重置旧时间。
     var body: some View {
         let snapshot = self.snapshot.flatMap { geminiSettings.accepts($0.source) ? AntigravityStatuslinePresentation.project($0) : nil }
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Label {
-                    Text(AppLocalization.string("Antigravity"))
+                    Text(antigravityText("Antigravity 配额", "Antigravity quota"))
                 } icon: {
                     Image("AntigravityIcon")
                         .resizable()
@@ -38,7 +66,7 @@ struct GeminiModelsSection: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
-                if let accountEmail = snapshot?.accountEmail, !accountEmail.isEmpty {
+                if showsAccountSummary, let accountEmail = snapshot?.accountEmail, !accountEmail.isEmpty {
                     Text(accountEmail)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
@@ -48,12 +76,20 @@ struct GeminiModelsSection: View {
             }
 
             if let snapshot {
+                if showsAccountSummary, let plan = snapshot.planName {
+                    Text(plan).font(.caption2).foregroundStyle(.secondary)
+                }
                 if snapshot.source == .antigravityCLIStatusline {
-                    if let plan = snapshot.planName { Text(plan).font(.caption2).foregroundStyle(.secondary) }
                     Text(AntigravityStatuslinePresentation.summary(snapshot))
                         .font(.caption2)
                         .foregroundStyle(AntigravityStatuslinePresentation.isStale(snapshot) ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text(snapshot.source == .antigravityLocal
+                         ? antigravityText("额度来源 · 本地 Antigravity", "Quota source · local Antigravity")
+                         : antigravityText("额度来源 · Google OAuth", "Quota source · Google OAuth"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
                 ForEach(visibleGroups(snapshot)) { group in
                     VStack(alignment: .leading, spacing: 4) {
@@ -69,19 +105,57 @@ struct GeminiModelsSection: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                if let errorMessage, !errorMessage.isEmpty {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else if let errorMessage, !errorMessage.isEmpty {
                 Label(errorMessage, systemImage: "exclamationmark.triangle")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Label(AppLocalization.string("等待 Antigravity 配额刷新。"), systemImage: "arrow.triangle.2.circlepath")
+                Label(AppLocalization.string(geminiSettings.usesCLIStatusline
+                      ? "等待官方 CLI Statusline 额度快照。请保持 CLI 运行并正常刷新额度。"
+                      : "等待 Antigravity 配额刷新。"), systemImage: "arrow.triangle.2.circlepath")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if geminiSettings.usesCLIStatusline {
+                if snapshot == nil {
+                    Text("CLI Statusline · \(AppLocalization.string("最近采集")) —")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Text(cliCheckText)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Text(antigravityText(antigravityLocalCheckExplanation.chinese, antigravityLocalCheckExplanation.english))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(antigravityText("额度由 CLI 实际观测产生；桌面单独使用或 CLI 空闲时可能未更新，正常使用 /usage 可促发更新。", "Quota changes only with actual CLI observations. Desktop-only use or idle CLI can leave it stale; normal /usage may prompt an update."))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(8)
         .popoverCardSurface(opacity: 0.46)
+    }
+
+    /// 检查时刻仅取应用发布的实际本地检查（包括失败），不使用 Date() 或额度采集时间填充。
+    private var cliCheckText: String {
+        let dateFormatter = DateFormatter()
+        dateFormatter.locale = currentAppLanguage().locale
+        dateFormatter.dateStyle = .short
+        dateFormatter.timeStyle = .medium
+        let time = cliLastCheckedAt.map { dateFormatter.string(from: $0) } ?? "—"
+        return "\(antigravityText("最近本地检查", "Last local check")) \(time)"
     }
 
     /// 按选择的配额组过滤窗口；摘要接口只有总 Gemini 组时仍保留真实返回的数据。

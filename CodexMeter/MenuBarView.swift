@@ -85,11 +85,16 @@ struct MenuBarView: View {
     @ObservedObject var viewModel: UsageViewModel
     @ObservedObject var radarStore: CodexRadarStore
     @ObservedObject var updater: AppUpdater
+    @ObservedObject private var providerSelection: PopoverProviderSelection
     @ObservedObject private var openCodeGoStore = OpenCodeGoStore.shared
+    @ObservedObject private var powertoolsStore = AntigravityPowertoolsStore.shared
     let onSizeChange: ((CGSize) -> Void)?
     let onColorSchemeChange: ((ColorScheme) -> Void)?
     @State private var activityMode = TokenActivityMode.daily
-    @State private var measuredScrollContentHeight: CGFloat = 0
+    // 真实内容与布局测量副本共享期间和折叠状态，两份视图都不发起本地读取。
+    @State private var powertoolsPeriod = PowertoolsUsagePeriod.today
+    @State private var powertoolsDetailsExpanded = false
+    @State private var lastScrollMeasurement: MenuBarScrollContentMeasurement?
     // 重建后首帧先使用安全的可滚动容器，避免未完成测量的长内容溢出弹窗。
     @State private var usesScrollableContent = true
     @State private var activePaceHelpText: String?
@@ -116,16 +121,18 @@ struct MenuBarView: View {
         popoverColorSchemeOverride ?? appearanceSettings.appearanceMode.colorScheme ?? systemColorScheme
     }
 
-    /// 创建弹窗内容，并把尺寸与主题变化同步给 AppKit 宿主。
+    /// 注入宿主持有的页选择，重建视图只重建布局，不重置打开期间仍合法的选择。
     init(
         viewModel: UsageViewModel,
         radarStore: CodexRadarStore,
+        providerSelection: PopoverProviderSelection,
         updater: AppUpdater = .shared,
         onSizeChange: ((CGSize) -> Void)? = nil,
         onColorSchemeChange: ((ColorScheme) -> Void)? = nil
     ) {
         self.viewModel = viewModel
         self.radarStore = radarStore
+        self.providerSelection = providerSelection
         self.updater = updater
         self.onSizeChange = onSizeChange
         self.onColorSchemeChange = onColorSchemeChange
@@ -158,26 +165,39 @@ struct MenuBarView: View {
             }
     }
 
+    /// 固定页签与底部操作不进入卷动区域；页切换只改变展示，不触发任何读取。
     private var contentBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             header
+            if providerSelection.tabs.count > 1 {
+                providerTabs
+            }
 
             Divider()
 
             contentArea
-                .onPreferenceChange(MenuBarScrollContentHeightPreferenceKey.self) { height in
-                    updateMeasuredScrollContentHeight(height)
+                .onPreferenceChange(MenuBarScrollContentHeightPreferenceKey.self) { measurement in
+                    if let measurement { updateMeasuredScrollContentHeight(measurement) }
+                }
+                .onChange(of: providerSelection.selected) { _, _ in
+                    activePaceHelpText = nil
                 }
 
             Divider()
 
             HStack {
-                Button {
-                    Task { await viewModel.refresh() }
-                } label: {
-                    Label(AppLocalization.string("刷新"), systemImage: "arrow.clockwise")
+                Button(action: refreshFromFooter) {
+                    Label(
+                        viewModel.isRefreshing && hasLocalAntigravitySources
+                            ? antigravityText("检查本机", "Check local")
+                            : AppLocalization.string("刷新"),
+                        systemImage: "arrow.clockwise"
+                    )
                 }
-                .disabled(viewModel.isRefreshing)
+                .disabled(viewModel.isRefreshing && !hasLocalAntigravitySources)
+                .help(viewModel.isRefreshing && hasLocalAntigravitySources
+                    ? antigravityText("Codex 正在刷新；仍可独立检查本机 Antigravity 数据。", "Codex is refreshing; enabled local Antigravity sources can still be checked.")
+                    : AppLocalization.string("刷新"))
 
                 Button {
                     SettingsWindowPresenter.shared.show()
@@ -246,20 +266,53 @@ struct MenuBarView: View {
         }
     }
 
+    /// 页头只显示当前供应商的身份和读数状态，不把 Codex 登录或刷新失败带到另外两页。
     private var header: some View {
         HStack(spacing: 8) {
-            Image(systemName: viewModel.statusSymbolName)
-                .font(.headline)
-                .symbolRenderingMode(.hierarchical)
-            Text("CodexMeter")
-                .font(.headline)
-            Spacer()
-            if viewModel.isRefreshing {
-                ProgressView()
-                    .controlSize(.small)
-            }
-            if let snapshot = viewModel.snapshot {
-                MenuBarAccountSummary(snapshot: snapshot)
+            switch providerSelection.selected {
+            case .codex:
+                Image(systemName: viewModel.statusSymbolName)
+                    .font(.headline)
+                    .symbolRenderingMode(.hierarchical)
+                Text("CodexMeter")
+                    .font(.headline)
+                Spacer()
+                if viewModel.isRefreshing {
+                    ProgressView().controlSize(.small)
+                }
+                if let snapshot = viewModel.snapshot {
+                    MenuBarAccountSummary(snapshot: snapshot)
+                }
+            case .antigravity:
+                providerHeaderBrand("Antigravity", imageName: "AntigravityIcon")
+                Spacer(minLength: 4)
+                if (geminiSettings.usesCLIStatusline && viewModel.isRefreshingCLIStatusline)
+                    || (geminiSettings.isEnabled && powertoolsStore.isEnabled && powertoolsStore.isRefreshing) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel(antigravityText("检查 Antigravity 本机数据", "Checking Antigravity local data"))
+                }
+                if viewModel.geminiErrorMessage != nil || (powertoolsStore.isEnabled && powertoolsStore.errorMessage != nil) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel(antigravityText("Antigravity 数据部分不可用", "Some Antigravity data is unavailable"))
+                }
+                if let snapshot = viewModel.geminiSnapshot, geminiSettings.accepts(snapshot.source) {
+                    quotaAccountSummary(snapshot)
+                }
+            case .openCodeGo:
+                providerHeaderBrand("OpenCode Go", imageName: "OpenCodeIcon")
+                Spacer(minLength: 4)
+                if openCodeGoStore.isRefreshing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel(antigravityText("读取 OpenCode Go 额度", "Reading OpenCode Go quota"))
+                }
+                if openCodeGoStore.errorMessage != nil {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel(antigravityText("OpenCode Go 额度读取失败", "OpenCode Go quota read failed"))
+                }
             }
             Button {
                 popoverColorSchemeOverride = effectivePopoverColorScheme == .dark ? .light : .dark
@@ -275,29 +328,126 @@ struct MenuBarView: View {
         }
     }
 
+    /// 品牌图形沿用现有资源，不受其他供应商状态色或账号影响。
+    private func providerHeaderBrand(_ title: String, imageName: String) -> some View {
+        HStack(spacing: 6) {
+            Image(imageName)
+                .resizable()
+                .renderingMode(.template)
+                .scaledToFit()
+                .frame(width: 16, height: 16)
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    /// Antigravity 账号只来自当前接受的额度快照，并明确不是下方桌面记录的账号归属。
+    private func quotaAccountSummary(_ snapshot: GeminiModelsSnapshot) -> some View {
+        VStack(alignment: .trailing, spacing: 2) {
+            if let email = snapshot.accountEmail, !email.isEmpty {
+                Text(email).font(.callout.weight(.medium))
+            }
+            if let plan = snapshot.planName, !plan.isEmpty {
+                Text("\(antigravityText("额度", "Quota")) · \(plan)")
+                    .font(.caption.weight(.semibold))
+            } else if snapshot.accountEmail?.isEmpty == false {
+                Text(antigravityText("额度账号", "Quota account"))
+                    .font(.caption2)
+            }
+        }
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.72)
+        .frame(maxWidth: 200, alignment: .trailing)
+        .accessibilityElement(children: .combine)
+    }
+
+    /// 使用宿主选择作为唯一绑定；Picker 控件不负责可见性判定、默认重选或刷新。
+    private var providerTabs: some View {
+        Picker(antigravityText("供应商", "Provider"), selection: Binding(
+            get: { providerSelection.selected },
+            set: { providerSelection.select($0) }
+        )) {
+            ForEach(providerSelection.tabs) { provider in
+                Text(provider.title).tag(provider)
+            }
+        }
+        .labelsHidden()
+        .pickerStyle(.segmented)
+        .controlSize(.small)
+        .accessibilityLabel(antigravityText("供应商", "Provider"))
+    }
+
+    /// 即使下拉隐藏 Antigravity 也不取消已启用的本机来源；只有本机能力存在时才解除 Codex 在途禁用。
+    private var hasLocalAntigravitySources: Bool {
+        geminiSettings.usesCLIStatusline || (geminiSettings.isEnabled && powertoolsStore.isEnabled)
+    }
+
+    /// 保留原有全局手动刷新；Powertools 与 CLI 本地检查独立于 Codex 网络在途结果。
+    private func refreshFromFooter() {
+        if geminiSettings.isEnabled, powertoolsStore.isEnabled {
+            Task { await powertoolsStore.refresh() }
+        }
+        if viewModel.isRefreshing {
+            if geminiSettings.usesCLIStatusline {
+                Task { await viewModel.refreshCLIStatuslineIfSelected() }
+            }
+        } else {
+            // 全局刷新已包含 CLI 读取，不重复触发；Codex 在途时走上面的仅本地入口。
+            Task { await viewModel.refresh() }
+        }
+    }
+
+    /// 每个可见界面只有一个纯显示时钟，两个内容副本取相同时刻；Codex 和 Go 不增加定时器。
     @ViewBuilder private var contentArea: some View {
-        visibleContentArea
+        if providerSelection.selected == .antigravity {
+            TimelineView(.periodic(from: .now, by: 60)) { _ in
+                // 发布可能在两次时钟刻度间到达；取实际当前时间，不能把刚更新的 mtime 判作未来。
+                providerContentArea(now: Date())
+            }
+        } else {
+            providerContentArea(now: Date())
+        }
+    }
+
+    /// 切换页时重建滚动身份，避免从上一个供应商长内容的底部开始浏览新页。
+    private func providerContentArea(now: Date) -> some View {
+        visibleContentArea(now: now)
+            .id(providerSelection.selected)
             .background(alignment: .topLeading) {
-                measuredScrollContent
+                measuredScrollContent(now: now)
             }
     }
 
-    @ViewBuilder private var visibleContentArea: some View {
-        if usesScrollableContent {
+    /// 固定页签必须占原布局预算，避免最长滚动内容将底部操作栏挤出宿主。
+    private var scrollableContentLimit: CGFloat {
+        MenuBarPopoverLayout.maximumScrollableContentHeight - (providerSelection.tabs.count > 1 ? 30 : 0)
+    }
+
+    /// 当前内容的真实可视区域，无论有无滚动都取同一个供应商页面。
+    @ViewBuilder private func visibleContentArea(now: Date) -> some View {
+        let needsMeasurement = lastScrollMeasurement?.provider != providerSelection.selected
+            || lastScrollMeasurement?.tabCount != providerSelection.tabs.count
+        if needsMeasurement || usesScrollableContent {
             ScrollView(.vertical, showsIndicators: false) {
-                scrollContent
+                scrollContent(now: now)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(height: MenuBarPopoverLayout.maximumScrollableContentHeight)
+            .frame(height: scrollableContentLimit)
         } else {
-            scrollContent
+            scrollContent(now: now)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     /// 使用不参与布局的隐藏副本测量真实内容高度，避免 ScrollView 视口高度反向污染测量值。
-    private var measuredScrollContent: some View {
-        scrollContent
+    private func measuredScrollContent(now: Date) -> some View {
+        // 固定测量身份；即使用户切页导致之前的 GeometryReader 稍晚发布，也不能冒充新页高度。
+        let provider = providerSelection.selected
+        let tabCount = providerSelection.tabs.count
+        return scrollContent(now: now)
             .frame(width: MenuBarPopoverLayout.contentWidth, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
             .hidden()
@@ -307,38 +457,32 @@ struct MenuBarView: View {
                 GeometryReader { proxy in
                     Color.clear.preference(
                         key: MenuBarScrollContentHeightPreferenceKey.self,
-                        value: proxy.size.height
+                        value: MenuBarScrollContentMeasurement(provider: provider, tabCount: tabCount, height: ceil(proxy.size.height))
                     )
                 }
             )
     }
 
-    /// 更新内容高度并带滞后地切换滚动状态，防止高度接近阈值时在滚动/非滚动之间抖动。
-    private func updateMeasuredScrollContentHeight(_ height: CGFloat) {
-        guard height > 0 else {
-            return
-        }
-        let roundedHeight = ceil(height)
+    /// 只接纳当前页与页签数量匹配的测量，带滞后切换滚动状态；新页首帧先使用安全滚动容器。
+    private func updateMeasuredScrollContentHeight(_ measurement: MenuBarScrollContentMeasurement) {
+        guard measurement.height > 0 else { return }
         DispatchQueue.main.async {
-            let hasPreviousMeasurement = measuredScrollContentHeight > 0
-            if abs(measuredScrollContentHeight - roundedHeight) > 0.5 {
-                measuredScrollContentHeight = roundedHeight
-            }
-
-            let maximumHeight = MenuBarPopoverLayout.maximumScrollableContentHeight
+            guard providerSelection.selected == measurement.provider,
+                  providerSelection.tabs.count == measurement.tabCount else { return }
+            let hasPreviousMeasurement = lastScrollMeasurement?.provider == measurement.provider
+                && lastScrollMeasurement?.tabCount == measurement.tabCount
+            let maximumHeight = scrollableContentLimit
             let hysteresis = MenuBarPopoverLayout.scrollOverflowHysteresis
-            let shouldUseScrollableContent = hasPreviousMeasurement
-                ? (usesScrollableContent
-                    ? roundedHeight > maximumHeight - hysteresis
-                    : roundedHeight > maximumHeight + hysteresis)
-                : roundedHeight > maximumHeight
-            guard shouldUseScrollableContent != usesScrollableContent else {
-                return
-            }
+            // 进入滚动状态时不超出预算，只在离开滚动态保留滞后，给固定页签和操作栏留足空间。
+            let shouldUseScrollableContent = hasPreviousMeasurement && usesScrollableContent
+                ? measurement.height > maximumHeight - hysteresis
+                : measurement.height > maximumHeight
+            guard lastScrollMeasurement != measurement || usesScrollableContent != shouldUseScrollableContent else { return }
 
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
+                lastScrollMeasurement = measurement
                 usesScrollableContent = shouldUseScrollableContent
             }
         }
@@ -416,8 +560,45 @@ struct MenuBarView: View {
         .foregroundStyle(.secondary)
     }
 
-    /// 按供应商启用与显示偏好汇总独立卡片；Go 不依赖 Codex 快照，隐藏后不占布局。
-    @ViewBuilder private var scrollContent: some View {
+    /// 只组合选择的供应商内容；额度在 Antigravity 页面最前，桌面统计不依赖额度快照。
+    @ViewBuilder private func scrollContent(now: Date) -> some View {
+        switch providerSelection.selected {
+        case .antigravity:
+            VStack(alignment: .leading, spacing: 6) {
+                GeminiModelsSection(
+                    geminiSettings: geminiSettings,
+                    displaySettings: settings,
+                    showsPaceComparison: popoverSettings.showsPaceComparison,
+                    snapshot: viewModel.geminiSnapshot,
+                    errorMessage: viewModel.geminiErrorMessage,
+                    formatter: formatter,
+                    resetTimeDisplayStyle: popoverSettings.resetTimeDisplayStyle,
+                    onPaceMarkerHoverChange: updateActivePaceHelpText,
+                    cliLastCheckedAt: viewModel.cliLastCheckedAt,
+                    showsAccountSummary: false
+                )
+                AntigravityPowertoolsSection(
+                    store: powertoolsStore,
+                    period: $powertoolsPeriod,
+                    detailsExpanded: $powertoolsDetailsExpanded,
+                    compact: true,
+                    now: now
+                )
+            }
+        case .codex:
+            codexContent
+        case .openCodeGo:
+            OpenCodeGoSection(
+                store: openCodeGoStore,
+                displaySettings: settings,
+                popoverSettings: popoverSettings,
+                onPaceMarkerHoverChange: updateActivePaceHelpText
+            )
+        }
+    }
+
+    /// Codex 独立页保留原额度、重置卡、雷达、本机成本、云端统计、同步详情及错误的全部原有条件。
+    private var codexContent: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let snapshot = viewModel.snapshot {
                 usageContent(snapshot)
@@ -440,28 +621,6 @@ struct MenuBarView: View {
                         freshness: viewModel.localCodexUsageFreshness
                     )
                 }
-            }
-
-            if openCodeGoStore.isEnabled, openCodeGoStore.showsInPopover {
-                OpenCodeGoSection(
-                    store: openCodeGoStore,
-                    displaySettings: settings,
-                    popoverSettings: popoverSettings,
-                    onPaceMarkerHoverChange: updateActivePaceHelpText
-                )
-            }
-
-            if geminiSettings.isEnabled, geminiSettings.showsInPopover {
-                GeminiModelsSection(
-                    geminiSettings: geminiSettings,
-                    displaySettings: settings,
-                    showsPaceComparison: popoverSettings.showsPaceComparison,
-                    snapshot: viewModel.geminiSnapshot,
-                    errorMessage: viewModel.geminiErrorMessage,
-                    formatter: formatter,
-                    resetTimeDisplayStyle: popoverSettings.resetTimeDisplayStyle,
-                    onPaceMarkerHoverChange: updateActivePaceHelpText
-                )
             }
 
             if let errorMessage = viewModel.errorMessage {
@@ -1913,11 +2072,20 @@ private struct InfoRow: View {
     }
 }
 
-private struct MenuBarScrollContentHeightPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
+/// 带页面身份的测量值，防止设置变更或切页时旧尺寸覆盖新页面，标签数量还决定固定区预算。
+private struct MenuBarScrollContentMeasurement: Equatable, Sendable {
+    let provider: PopoverProviderSelection.Provider
+    let tabCount: Int
+    let height: CGFloat
+}
 
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+/// 当前选择的隐藏内容只发布一个有效测量；不能合并不同供应商的高度。
+private struct MenuBarScrollContentHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: MenuBarScrollContentMeasurement? = nil
+
+    /// 忽略缺失或零高度值，保留实际隐藏副本的测量身份。
+    static func reduce(value: inout MenuBarScrollContentMeasurement?, nextValue: () -> MenuBarScrollContentMeasurement?) {
+        if let next = nextValue(), next.height > 0 { value = next }
     }
 }
 

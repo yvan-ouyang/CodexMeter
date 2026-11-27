@@ -247,6 +247,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarController = StatusBarController(viewModel: viewModel, radarStore: radarStore)
         OpenCodeGoStore.shared.start()
         viewModel.start()
+        // 本机用量拥有独立生命周期；默认未启用时不访问 Powertools 的文件。
+        AntigravityPowertoolsStore.shared.start()
         radarStore.start()
         if AppBehaviorSettings(defaults: MenuBarDisplaySettings.sharedDefaults).opensSettingsAtLaunch {
             settingsWindowOpener.open()
@@ -305,6 +307,8 @@ final class StatusBarController: NSObject {
     private let activityStore = CodexHookActivityStore()
     private let statusItem: NSStatusItem
     private let popover = NSPopover()
+    // AppKit 宿主持久持有选中页；SwiftUI 重建不重设合法 Tab，只有真实重开才重选默认。
+    private let providerSelection = PopoverProviderSelection()
     private var statusLabel: PassthroughHostingView<StatusBarLabel>?
     private var nativeStatusButtonFont: NSFont?
     private var defaultsObservers: [NSObjectProtocol] = []
@@ -430,7 +434,10 @@ final class StatusBarController: NSObject {
     /// 同时监听 Codex 与 Go，读数或开关改变时重新测量同一个菜单栏项目。
     private func observeUsageChanges() {
         openCodeGoObserver = OpenCodeGoStore.shared.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async { self?.applyStatusDisplay() }
+            DispatchQueue.main.async {
+                self?.reconcilePopoverProviders()
+                self?.applyStatusDisplay()
+            }
         }
         usageObserver = viewModel.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async {
@@ -449,6 +456,7 @@ final class StatusBarController: NSObject {
 
     private func applySettings() {
         let settings = MenuBarDisplaySettings(defaults: MenuBarDisplaySettings.sharedDefaults)
+        reconcilePopoverProviders()
         applyStatusDisplay(settings: settings)
         resetPopoverSizeAfterContentChange()
         popover.appearance = configuredPopoverAppearance
@@ -547,6 +555,7 @@ final class StatusBarController: NSObject {
             rootView: MenuBarView(
                 viewModel: viewModel,
                 radarStore: radarStore,
+                providerSelection: providerSelection,
                 updater: AppUpdater.shared,
                 onSizeChange: { [weak self] size in
                     self?.updatePopoverSize(for: size)
@@ -673,10 +682,15 @@ final class StatusBarController: NSObject {
         return max(MenuBarPopoverLayout.minimumHeight, min(MenuBarPopoverLayout.maximumHeight, availableHeight))
     }
 
+    /// 只在真正打开时重置默认供应商；设置或数据刷新期间保持用户的合法选择。
     @objc private func togglePopover(_ sender: NSStatusBarButton) {
         if popover.isShown {
             popover.performClose(sender)
         } else {
+            let gemini = GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults)
+            let go = OpenCodeGoStore.shared
+            providerSelection.open(antigravityVisible: gemini.isEnabled && gemini.showsInPopover,
+                                   goVisible: go.isEnabled && go.showsInPopover)
             NSApp.activate(ignoringOtherApps: true)
             refreshPopoverSizeFromFittingContent(realign: false)
             popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
@@ -686,7 +700,16 @@ final class StatusBarController: NSObject {
             Task { await viewModel.refreshLocalCodexUsage() }
             Task { await viewModel.refreshResetCreditsIfNeeded() }
             Task { await viewModel.refreshCLIStatuslineIfSelected() }
+            Task { await AntigravityPowertoolsStore.shared.refresh() }
         }
+    }
+
+    /// 设置更新或 Go 可见性变化只校验现有选择，不把已打开页面抢回 Antigravity。
+    private func reconcilePopoverProviders() {
+        let gemini = GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults)
+        let go = OpenCodeGoStore.shared
+        providerSelection.reconcile(antigravityVisible: gemini.isEnabled && gemini.showsInPopover,
+                                    goVisible: go.isEnabled && go.showsInPopover)
     }
 
     /// 清除 NSPopover 自带的不透明窗口底色，避免它与内容中的玻璃层重复叠加。

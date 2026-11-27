@@ -33,8 +33,10 @@ final class AntigravityStatuslineTests: XCTestCase {
         XCTAssertEqual(raw.groups.map(\.id), ["gemini-models", "claude-gpt-models"])
         XCTAssertEqual(raw.groups.flatMap(\.windows).map(\.remainingPercent), [72, 96, 100, 50])
         XCTAssertNil(raw.groups[1].windows[0].resetsAt)
-        let stale = AntigravityStatuslinePresentation.project(raw, now: t.addingTimeInterval(121))
-        XCTAssertTrue(AntigravityStatuslinePresentation.isStale(raw, now: t.addingTimeInterval(121)))
+        // 五分钟本地检查对应新的 CLI 陈旧边界；检查时间不是观测时间。
+        XCTAssertFalse(AntigravityStatuslinePresentation.isStale(raw, now: t.addingTimeInterval(299)))
+        let stale = AntigravityStatuslinePresentation.project(raw, now: t.addingTimeInterval(300))
+        XCTAssertTrue(AntigravityStatuslinePresentation.isStale(raw, now: t.addingTimeInterval(300)))
         XCTAssertTrue(AntigravityStatuslinePresentation.isStale(raw, now: t.addingTimeInterval(-1)))
         XCTAssertEqual(stale.fetchedAt, t)
         XCTAssertEqual(stale.groups.flatMap(\.windows).map(\.remainingPercent), [72, 96, 100, 50])
@@ -47,7 +49,7 @@ final class AntigravityStatuslineTests: XCTestCase {
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temp) }
         let store = AntigravityStatuslineStore(snapshotURL: temp.appendingPathComponent("cli-statusline-v1.json"))
-        try store.receive(Self.payload(), at: Date().addingTimeInterval(-121))
+        try store.receive(Self.payload(), at: Date().addingTimeInterval(-301))
         let cli = try AntigravityStatuslineUsageClient(store: store).loadSnapshot()
         let settings = GeminiModelsSettings(isEnabled: true, showsInMenuBar: true, dataSource: .cliStatusline)
         let line = try XCTUnwrap(StatusLineDisplay.layoutGeminiLine(for: .geminiPrimary, settings: MenuBarDisplaySettings(), geminiSettings: settings, snapshot: cli))
@@ -86,6 +88,37 @@ final class AntigravityStatuslineTests: XCTestCase {
         XCTAssertEqual(count, 0)
         XCTAssertEqual(try store.load()?.rateLimits, limits)
         XCTAssertNotEqual(try store.load()?.geminiModels?.source, .antigravityCLIStatusline)
+    }
+
+    /// 两次重叠的 CLI 检查合并；真正完成读文件的时间独立于原始四桶观测。
+    func testCLIOverlappingCheckKeepsObservationAndUpdatesCheckTime() async throws {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let observation = Date().addingTimeInterval(-3600)
+        let raw = GeminiModelsSnapshot(fetchedAt: observation, source: .antigravityCLIStatusline, groups: [])
+        let local = StatuslineDeferredLegacy(snapshot: raw)
+        let cache = UsageSnapshotStore(appGroupIdentifier: "", fallbackDirectory: temp)
+        let vm = UsageViewModel(client: StatuslineFailingCodex(), store: cache, reloadWidgetTimelines: {},
+            refreshCadenceProvider: { .manual }, statuslineClient: local,
+            geminiSettingsProvider: { GeminiModelsSettings(isEnabled: true, dataSource: .cliStatusline) }, localCodexUsageLoader: { nil })
+        let first = Task { await vm.refreshCLIStatuslineIfSelected() }
+        for _ in 0..<100 {
+            if await local.hasStarted { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        guard await local.hasStarted else { await local.release(); await first.value; return XCTFail("CLI 检查未启动") }
+        XCTAssertTrue(vm.isRefreshingCLIStatusline)
+        XCTAssertNil(vm.cliLastCheckedAt)
+        // 同一主执行器先进入第二个检查；它等待已持有的读任务后，放行任务才能继续执行。
+        let release = Task { @MainActor in await local.release() }
+        await vm.refreshCLIStatuslineIfSelected()
+        await release.value; await first.value
+        XCTAssertEqual(vm.geminiSnapshot?.fetchedAt, observation)
+        XCTAssertNotNil(vm.cliLastCheckedAt)
+        XCTAssertFalse(vm.isRefreshingCLIStatusline)
+        let count = await local.callCount
+        XCTAssertEqual(count, 1, "重叠检查只读同一份本地事实")
+        XCTAssertNil(try cache.load())
     }
 
     /// Codex 主请求成功且旧来源仍在途时切换，晚到数据和新 CLI 数据都不得串入旧共享缓存。
@@ -240,15 +273,17 @@ private struct StatuslineFixedCodex: UsageRateLimitFetching {
 private actor StatuslineDeferredLegacy: GeminiModelsUsageFetching {
     let snapshot: GeminiModelsSnapshot
     private(set) var hasStarted = false
+    private(set) var callCount = 0
     private var released = false
-    private var pending: CheckedContinuation<Void, Never>?
+    private var pending: [CheckedContinuation<Void, Never>] = []
     init(snapshot: GeminiModelsSnapshot) { self.snapshot = snapshot }
     /// 先标记调用、等待放行，再返回历史源数据。
     func fetchGeminiModels() async throws -> GeminiModelsSnapshot {
         hasStarted = true
-        if !released { await withCheckedContinuation { pending = $0 } }
+        callCount += 1
+        if !released { await withCheckedContinuation { pending.append($0) } }
         return snapshot
     }
-    /// 不论任务是否已启动，后续均可正常结束。
-    func release() { released = true; pending?.resume(); pending = nil }
+    /// 不论有多少重叠调用、任务是否已启动，后续均可正常结束，回归失败也不挂住。
+    func release() { released = true; let waiting = pending; pending = []; waiting.forEach { $0.resume() } }
 }

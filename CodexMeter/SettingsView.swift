@@ -220,11 +220,14 @@ struct SettingsView: View {
     @AppStorage(PopoverPreferenceKeys.showsLocalProjects, store: MenuBarDisplaySettings.sharedDefaults) private var popoverShowsLocalProjects = PopoverDisplaySettings.defaultShowsLocalProjects
     @AppStorage(PopoverPreferenceKeys.resetTimeDisplayStyle, store: MenuBarDisplaySettings.sharedDefaults) private var popoverResetTimeDisplayStyle = PopoverDisplaySettings.defaultResetTimeDisplayStyle.rawValue
 
+    @ObservedObject private var powertoolsStore = AntigravityPowertoolsStore.shared
+    @State private var powertoolsPeriod = PowertoolsUsagePeriod.today
     @State private var selectedPane = Pane.general
     @State private var configurationInfo = CodexConfigurationInfo.current()
     @State private var previewSnapshot: UsageSnapshot?
     @State private var cliPreviewSnapshot: GeminiModelsSnapshot?
     @State private var cliPreviewError: String?
+    @State private var cliLastCheckedAt: Date?
     @State private var statuslineInstallation = AntigravityStatuslineInstaller.status()
     @State private var statuslineInstallationMessage: String?
     @State private var launchAtLoginEnabled = false
@@ -303,7 +306,7 @@ struct SettingsView: View {
             updateLaunchAtLoginState()
             configurationInfo = CodexConfigurationInfo.current()
             loadPreviewSnapshot()
-            loadStatuslinePreview()
+            // CLI/Powertools 检查由 SettingsWindowPresenter 的真实显示入口发起，视图出现和重绘不重复读文件。
             menuBarLayoutChoice = MenuBarLayoutChoice.matching(settings: currentSettings)
             menuBarLayout = MenuBarLayoutStore.load()
         }
@@ -317,6 +320,7 @@ struct SettingsView: View {
             let selected = GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults)
             cliPreviewSnapshot = selected.usesCLIStatusline ? notification.object as? GeminiModelsSnapshot : nil
             cliPreviewError = selected.usesCLIStatusline ? notification.userInfo?["error"] as? String : nil
+            cliLastCheckedAt = selected.usesCLIStatusline ? notification.userInfo?["checkedAt"] as? Date : nil
         }
     }
 
@@ -1034,10 +1038,13 @@ struct SettingsView: View {
                         errorMessage: geminiDataSource == GeminiModelsDataSource.cliStatusline.rawValue ? cliPreviewError : nil,
                         formatter: UsageFormatter(language: activeLanguage),
                         resetTimeDisplayStyle: currentPopoverSettings.resetTimeDisplayStyle,
-                        onPaceMarkerHoverChange: { _, _ in }
+                        onPaceMarkerHoverChange: { _, _ in },
+                        cliLastCheckedAt: cliLastCheckedAt
                     )
                 }
             }
+
+            powertoolsUsageSection
 
             Section {
                 Text(localized(geminiDataSource == GeminiModelsDataSource.cliStatusline.rawValue
@@ -1050,6 +1057,55 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+    }
+
+    /// 独立统计 opt-in 只调用应用级 Store；不走额度来源绑定或 Widget 刷新通知，详细数据复用下拉发布源。
+    private var powertoolsUsageSection: some View {
+        Section(antigravityText("Powertools 本机用量", "Powertools local usage")) {
+            SettingsToggleRow(
+                title: antigravityText("启用 Powertools 本机统计", "Enable Powertools local usage"),
+                subtitle: antigravityText("默认关闭；只读桌面用量和价格缓存，与配额来源及模型配额组无关。", "Off by default; reads only desktop usage and price caches, independently of quota source and model group."),
+                isOn: Binding(
+                    get: { powertoolsStore.isEnabled },
+                    set: { powertoolsStore.setEnabled($0) }
+                )
+            )
+            if !geminiModelsEnabled {
+                Text(antigravityText("Antigravity 总开关已关闭；保留此偏好，停止本机统计的读取和展示。", "Antigravity is disabled. This preference is retained; local usage reads and display are suspended."))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if geminiModelsEnabled && powertoolsStore.isEnabled {
+                HStack {
+                    Text(antigravityText("详细统计", "Detailed statistics"))
+                        .font(.callout.weight(.medium))
+                    Spacer()
+                    Button(antigravityText("立即检查本机记录", "Check local records now")) {
+                        Task { await powertoolsStore.refresh() }
+                    }
+                    .disabled(powertoolsStore.isRefreshing)
+                }
+                // 显示时间更新与跨日选区间不重新访问文件；切换设置侧栏也不触发读取。
+                TimelineView(.periodic(from: .now, by: 60)) { _ in
+                    AntigravityPowertoolsSection(
+                        store: powertoolsStore,
+                        period: $powertoolsPeriod,
+                        detailsExpanded: .constant(true),
+                        compact: false,
+                        now: Date()
+                    )
+                }
+            }
+            Text(antigravityText(antigravityLocalCheckExplanation.chinese, antigravityLocalCheckExplanation.english))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(antigravityText("只消费现有 Powertools 桌面记录及公开单价缓存；不启动插件、CLI 或网络，不读取会话内容或认证信息。", "Consumes existing Powertools desktop usage and cached list prices only; does not launch the plugin or CLI, access the network, or read conversations or credentials."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     /// CLI 配置与数据采集独立，只有用户点击安装/修复/移除才修改官方配置。
@@ -1119,13 +1175,11 @@ struct SettingsView: View {
         return nil
     }
 
-    /// 设置打开也向唯一 ViewModel 请求本地读取；预览只消费相同发布，避免独立缓存与菜单栏串账号。
+    /// 切换或安装后立即清空旧来源的预览；随后的已有额度设置通知由唯一 ViewModel 触发读取。
     private func loadStatuslinePreview() {
         cliPreviewSnapshot = nil
         cliPreviewError = nil
-        if GeminiModelsSettings(defaults: MenuBarDisplaySettings.sharedDefaults).usesCLIStatusline {
-            NotificationCenter.default.post(name: .antigravityCLIStatuslineRefreshRequested, object: nil)
-        }
+        cliLastCheckedAt = nil
     }
 
     /// Codex 页优先展示费用与用量，沿用共享快照；低频连接和诊断入口放在统计之后。

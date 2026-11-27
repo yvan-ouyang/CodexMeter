@@ -7,6 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A80000000000000000000006 /* AntigravityPowertoolsUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000001; };
+		A80000000000000000000007 /* AntigravityPowertoolsUsage.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000001; };
+		A80000000000000000000008 /* AntigravityPowertoolsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000002; };
+		A80000000000000000000009 /* AntigravityPowertoolsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000002; };
+		A8000000000000000000000A /* PopoverProviderSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000003; };
+		A8000000000000000000000B /* PopoverProviderSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000003; };
+		A8000000000000000000000C /* AntigravityPowertoolsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000004; };
+		A8000000000000000000000D /* AntigravityPowertoolsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000004; };
+		A8000000000000000000000E /* AntigravityPowertoolsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A80000000000000000000005; };
 		A70000000000000000000005 /* AntigravityStatusline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000001 /* AntigravityStatusline.swift */; };
 		A70000000000000000000006 /* AntigravityStatusline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000001 /* AntigravityStatusline.swift */; };
 		A70000000000000000000007 /* AntigravityStatuslineUsageClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70000000000000000000002 /* AntigravityStatuslineUsageClient.swift */; };
@@ -162,6 +171,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A80000000000000000000001 /* AntigravityPowertoolsUsage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityPowertoolsUsage.swift; sourceTree = "<group>"; };
+		A80000000000000000000002 /* AntigravityPowertoolsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityPowertoolsStore.swift; sourceTree = "<group>"; };
+		A80000000000000000000003 /* PopoverProviderSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverProviderSelection.swift; sourceTree = "<group>"; };
+		A80000000000000000000004 /* AntigravityPowertoolsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityPowertoolsViews.swift; sourceTree = "<group>"; };
+		A80000000000000000000005 /* AntigravityPowertoolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityPowertoolsTests.swift; sourceTree = "<group>"; };
 		A70000000000000000000001 /* AntigravityStatusline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityStatusline.swift; sourceTree = "<group>"; };
 		A70000000000000000000002 /* AntigravityStatuslineUsageClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityStatuslineUsageClient.swift; sourceTree = "<group>"; };
 		A70000000000000000000003 /* AntigravityStatuslineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AntigravityStatuslineTests.swift; sourceTree = "<group>"; };
@@ -291,6 +305,7 @@
 		100000000000000000000073 /* CodexMeterTests */ = {
 			isa = PBXGroup;
 			children = (
+				A80000000000000000000005 /* AntigravityPowertoolsTests.swift */,
 				A70000000000000000000003 /* AntigravityStatuslineTests.swift */,
 				A50000000000000000000005 /* CodexActivityHookTests.swift */,
 				100000000000000000000012 /* UsageModelsTests.swift */,
@@ -325,6 +340,10 @@
 				100000000000000000000C03 /* SettingsWindowOpener.swift */,
 				100000000000000000000C06 /* SettingsWindowPresenter.swift */,
 				100000000000000000000F04 /* CodexHookActivityStore.swift */,
+				A80000000000000000000001 /* AntigravityPowertoolsUsage.swift */,
+				A80000000000000000000002 /* AntigravityPowertoolsStore.swift */,
+				A80000000000000000000003 /* PopoverProviderSelection.swift */,
+				A80000000000000000000004 /* AntigravityPowertoolsViews.swift */,
 				A70000000000000000000001 /* AntigravityStatusline.swift */,
 				A70000000000000000000002 /* AntigravityStatuslineUsageClient.swift */,
 				A70000000000000000000004 /* antigravity-statusline-v1.marker */,
@@ -583,6 +602,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				100000000000000000000002 /* UsageModelsTests.swift in Sources */,
+				A80000000000000000000007 /* AntigravityPowertoolsUsage.swift in Sources */,
+				A80000000000000000000009 /* AntigravityPowertoolsStore.swift in Sources */,
+				A8000000000000000000000B /* PopoverProviderSelection.swift in Sources */,
+				A8000000000000000000000D /* AntigravityPowertoolsViews.swift in Sources */,
+				A8000000000000000000000E /* AntigravityPowertoolsTests.swift in Sources */,
 				A70000000000000000000006 /* AntigravityStatusline.swift in Sources */,
 				A70000000000000000000008 /* AntigravityStatuslineUsageClient.swift in Sources */,
 				A70000000000000000000009 /* AntigravityStatuslineTests.swift in Sources */,
@@ -640,6 +664,10 @@
 				10000000000000000000000E /* DirectCodexUsageClient.swift in Sources */,
 				100000000000000000001013 /* CodexRadarClient.swift in Sources */,
 				100000000000000000000F03 /* CodexHookActivityStore.swift in Sources */,
+				A80000000000000000000006 /* AntigravityPowertoolsUsage.swift in Sources */,
+				A80000000000000000000008 /* AntigravityPowertoolsStore.swift in Sources */,
+				A8000000000000000000000A /* PopoverProviderSelection.swift in Sources */,
+				A8000000000000000000000C /* AntigravityPowertoolsViews.swift in Sources */,
 				A70000000000000000000005 /* AntigravityStatusline.swift in Sources */,
 				A70000000000000000000007 /* AntigravityStatuslineUsageClient.swift in Sources */,
 				A50000000000000000000001 /* CodexActivityHook.swift in Sources */,

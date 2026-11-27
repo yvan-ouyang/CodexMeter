@@ -650,15 +650,18 @@ final class UsageViewModelTests: XCTestCase {
         XCTAssertFalse(widgetSource.contains("snapshot.localCodexUsage?.fetchedAt ?? snapshot.fetchedAt"))
     }
 
+    /// 窗口复用时只在关闭后真正重开触发本地检查，测试不访问实际用户文件。
     func testSettingsWindowPresenterCreatesAndReusesSettingsWindow() {
         var createdWindowCount = 0
+        var localCheckCount = 0
         let presenter = SettingsWindowPresenter(
             makeContentViewController: {
                 createdWindowCount += 1
                 return NSViewController()
             },
             prepareApplicationForWindow: {},
-            activateApplication: {}
+            activateApplication: {},
+            requestLocalChecks: { localCheckCount += 1 }
         )
 
         let firstWindow = presenter.show()
@@ -669,8 +672,12 @@ final class UsageViewModelTests: XCTestCase {
 
         XCTAssertIdentical(firstWindow, secondWindow)
         XCTAssertEqual(createdWindowCount, 1)
+        XCTAssertEqual(localCheckCount, 1)
         XCTAssertTrue(firstWindow.isVisible)
         XCTAssertFalse(firstWindow.isReleasedWhenClosed)
+        firstWindow.close()
+        XCTAssertIdentical(presenter.show(), firstWindow)
+        XCTAssertEqual(localCheckCount, 2)
     }
 
     func testSettingsWindowUsesExpandedResizableContentSize() {
@@ -679,7 +686,8 @@ final class UsageViewModelTests: XCTestCase {
                 NSViewController()
             },
             prepareApplicationForWindow: {},
-            activateApplication: {}
+            activateApplication: {},
+            requestLocalChecks: {}
         )
 
         let window = presenter.show()
@@ -703,7 +711,8 @@ final class UsageViewModelTests: XCTestCase {
             },
             activateApplication: {
                 events.append("activate")
-            }
+            },
+            requestLocalChecks: {}
         )
 
         let window = presenter.show()

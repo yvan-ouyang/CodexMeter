@@ -41,9 +41,9 @@ struct AntigravityStatuslineUsageClient: GeminiModelsUsageFetching, Sendable {
 
 /// CLI 来源的显示时间由真实捕获时间计算；本地重读和 UI 计时不得伪造观察时间或额度重置。
 enum AntigravityStatuslinePresentation {
-    static let staleAfter: TimeInterval = 120
+    static let staleAfter: TimeInterval = 300
 
-    /// 时钟回退或观测超过两分钟均不能声称是新鲜数据。
+    /// 五分钟本地检查不代表远端刷新；未来时间或观测已满五分钟均不能声称是新鲜数据。
     static func isStale(_ snapshot: GeminiModelsSnapshot, now: Date = Date()) -> Bool {
         let age = now.timeIntervalSince(snapshot.fetchedAt)
         return !age.isFinite || age < 0 || age >= staleAfter
